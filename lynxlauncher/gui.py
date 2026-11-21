@@ -29,12 +29,109 @@ STALL_WARN_SECONDS = 180     # mod count hasn't moved for this long
 GIVE_UP_SECONDS = 600        # stop watching (window stays open)
 
 
+# Dark theme. The splash frames are pre-rendered onto BG, so BG must match them exactly.
+BG = "#14181c"
+FG = "#e8ece6"
+MUTED = "#8b949b"
+GREEN = "#44ab38"
+GREEN_HI = "#55c447"
+TROUGH = "#262d33"
+BTN = "#242b31"
+BTN_HI = "#2f373f"
+BORDER = "#2c343b"
+FRAME_MS = 45
+
+
 def load_image(name: str):
     try:
         return tk.PhotoImage(file=str(ASSETS / name))
     except (tk.TclError, OSError) as e:
         log.debug("couldn't load %s: %s", name, e)
         return None
+
+
+def apply_theme(root: tk.Tk) -> None:
+    root.configure(bg=BG)
+    s = ttk.Style(root)
+    s.theme_use("clam")
+    s.configure(".", background=BG, foreground=FG, bordercolor=BORDER, lightcolor=BG, darkcolor=BG,
+                troughcolor=TROUGH, focuscolor=BG)
+    s.configure("TFrame", background=BG)
+    s.configure("TLabel", background=BG, foreground=FG)
+    s.configure("Muted.TLabel", foreground=MUTED)
+    s.configure("TButton", background=BTN, foreground=FG, bordercolor=BORDER, lightcolor=BTN, darkcolor=BTN,
+                padding=(14, 6), relief="flat")
+    s.map("TButton", background=[("disabled", BG), ("pressed", BTN_HI), ("active", BTN_HI)],
+          foreground=[("disabled", "#59626a")], bordercolor=[("disabled", "#20262b")])
+    s.configure("Accent.TButton", background=GREEN, foreground="#0c1a0a", bordercolor=GREEN,
+                lightcolor=GREEN, darkcolor=GREEN, font=("TkDefaultFont", 10, "bold"))
+    s.map("Accent.TButton", background=[("disabled", "#243322"), ("pressed", "#3a9430"), ("active", GREEN_HI)],
+          foreground=[("disabled", "#4f6a4b")], bordercolor=[("disabled", "#243322")])
+    s.configure("Horizontal.TProgressbar", background=GREEN, troughcolor=TROUGH, bordercolor=TROUGH,
+                lightcolor=GREEN, darkcolor=GREEN, thickness=8)
+
+
+def center(win: tk.Misc, w: int, h: int, y_frac: float = 0.4) -> None:
+    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+    win.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, int((sh - h) * y_frac))}")
+
+
+class Splash:
+    """Borderless, centered splash with the animated lynx. Drag anywhere to move it."""
+
+    def __init__(self, parent: tk.Tk, on_open_log, on_close):
+        self.top = top = tk.Toplevel(parent, bg=BORDER)
+        top.overrideredirect(True)
+        top.title("Starting Valheim")
+        inner = tk.Frame(top, bg=BG)
+        inner.pack(padx=1, pady=1, fill="both", expand=True)
+        self.frames = [img for i in range(60) if (img := load_image(f"splash/f{i:02d}.png"))]
+        self.frame_i = 0
+        close = tk.Label(inner, text="✕", bg=BG, fg=MUTED, font=("TkDefaultFont", 11), cursor="hand2")
+        close.place(relx=1.0, x=-12, y=8, anchor="ne")
+        close.bind("<Button-1>", lambda _e: on_close())
+        self.logo = tk.Label(inner, bg=BG, bd=0, image=self.frames[0] if self.frames else "")
+        self.logo.pack(pady=(26, 6))
+        tk.Label(inner, text="Starting Valheim", bg=BG, fg=FG, font=("TkDefaultFont", 16, "bold")).pack()
+        self.status = tk.StringVar(value="Waiting for Steam to start Valheim…")
+        tk.Label(inner, textvariable=self.status, bg=BG, fg=FG, font=("TkDefaultFont", 11)).pack(pady=(8, 8))
+        self.bar = ttk.Progressbar(inner, length=300, mode="indeterminate", maximum=1000)
+        self.bar.pack()
+        self.bar.start(14)
+        self.detail = tk.StringVar(value="")
+        tk.Label(inner, textvariable=self.detail, bg=BG, fg=MUTED, wraplength=320, justify="center",
+                 font=("TkDefaultFont", 9)).pack(pady=(8, 4))
+        link = tk.Label(inner, text="Open game log", bg=BG, fg=MUTED, cursor="hand2", font=("TkDefaultFont", 9, "underline"))
+        link.pack(pady=(4, 16))
+        link.bind("<Button-1>", lambda _e: on_open_log())
+        for w in (inner, self.logo):
+            w.bind("<ButtonPress-1>", self._drag_start)
+            w.bind("<B1-Motion>", self._drag)
+        top.bind("<Escape>", lambda _e: on_close())
+        center(top, 380, 480)
+        top.lift()
+        self._animate()
+
+    def _animate(self) -> None:
+        if self.frames:
+            self.frame_i = (self.frame_i + 1) % len(self.frames)
+            self.logo.configure(image=self.frames[self.frame_i])
+        self.top.after(FRAME_MS, self._animate)
+
+    def _drag_start(self, e) -> None:
+        self._dx, self._dy = e.x_root - self.top.winfo_x(), e.y_root - self.top.winfo_y()
+
+    def _drag(self, e) -> None:
+        self.top.geometry(f"+{e.x_root - self._dx}+{e.y_root - self._dy}")
+
+    def determinate(self, fraction: float) -> None:
+        if str(self.bar["mode"]) != "determinate":
+            self.bar.stop()
+            self.bar.configure(mode="determinate")
+        self.bar.configure(value=max(0, min(1000, 1000 * fraction)))
+
+    def stop(self) -> None:
+        self.bar.stop()
 
 
 class LauncherWindow:
@@ -46,12 +143,12 @@ class LauncherWindow:
         self.busy = False
 
         self.root = tk.Tk()
+        apply_theme(self.root)
         self.root.title(APP_NAME)
         self._icon = load_image("icon.png")
         if self._icon:
             self.root.iconphoto(True, self._icon)
         self._header_img = load_image("header.png")
-        self._splash_img = load_image("splash.png")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -60,7 +157,7 @@ class LauncherWindow:
         self.main_frame = frm
         ttk.Label(frm, text=" Lynx Mod Launcher", image=self._header_img or "", compound="left",
                   font=("TkDefaultFont", 16, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(frm, text=f"v{__version__}", foreground="gray").grid(row=0, column=2, sticky="e")
+        ttk.Label(frm, text=f"v{__version__}", style="Muted.TLabel").grid(row=0, column=2, sticky="ne")
 
         self.status = tk.StringVar(value="Starting…")
         ttk.Label(frm, textvariable=self.status, font=("TkDefaultFont", 11)).grid(
@@ -68,14 +165,14 @@ class LauncherWindow:
         self.bar = ttk.Progressbar(frm, length=420, mode="determinate", maximum=1000)
         self.bar.grid(row=2, column=0, columnspan=3, sticky="ew")
         self.detail = tk.StringVar(value="")
-        ttk.Label(frm, textvariable=self.detail, foreground="gray", wraplength=420, justify="left").grid(
+        ttk.Label(frm, textvariable=self.detail, style="Muted.TLabel", wraplength=420, justify="left").grid(
             row=3, column=0, columnspan=3, sticky="w", pady=(4, 12))
 
         self.logs_btn = ttk.Button(frm, text="Open logs", command=self.open_logs)
         self.logs_btn.grid(row=4, column=0, sticky="w")
         self.retry_btn = ttk.Button(frm, text="Check again", command=self.start_sync, state="disabled")
         self.retry_btn.grid(row=4, column=1, sticky="e", padx=8)
-        self.launch_btn = ttk.Button(frm, text="Launch", command=self.on_launch, state="disabled")
+        self.launch_btn = ttk.Button(frm, text="Launch", style="Accent.TButton", command=self.on_launch, state="disabled")
         self.launch_btn.grid(row=4, column=2, sticky="e")
         frm.columnconfigure(1, weight=1)
         self.root.bind("<Return>", lambda _e: self.on_launch() if str(self.launch_btn["state"]) == "normal" else None)
@@ -217,25 +314,8 @@ class LauncherWindow:
     # -- splash while Valheim starts ------------------------------------------
 
     def show_splash(self) -> None:
-        self.main_frame.grid_remove()
-        self.root.minsize(1, 1)
-        sp = ttk.Frame(self.root, padding=(28, 20))
-        sp.grid(sticky="nsew")
-        if self._splash_img:
-            ttk.Label(sp, image=self._splash_img).grid(row=0, column=0, columnspan=2, pady=(0, 12))
-        ttk.Label(sp, text="Starting Valheim", font=("TkDefaultFont", 16, "bold")).grid(row=1, column=0, columnspan=2)
-        self.sp_status = tk.StringVar(value="Waiting for Steam to start Valheim…")
-        ttk.Label(sp, textvariable=self.sp_status, font=("TkDefaultFont", 11)).grid(row=2, column=0, columnspan=2, pady=(6, 4))
-        self.sp_bar = ttk.Progressbar(sp, length=320, mode="indeterminate", maximum=1000)
-        self.sp_bar.grid(row=3, column=0, columnspan=2, pady=4)
-        self.sp_bar.start(15)
-        self.sp_detail = tk.StringVar(value="")
-        ttk.Label(sp, textvariable=self.sp_detail, foreground="gray", wraplength=340, justify="center").grid(
-            row=4, column=0, columnspan=2, pady=(4, 12))
-        ttk.Button(sp, text="Open game log", command=self.open_game_log).grid(row=5, column=0, sticky="w")
-        ttk.Button(sp, text="Close", command=self.root.destroy).grid(row=5, column=1, sticky="e")
-        sp.columnconfigure(0, weight=1)
-        self.root.title("Starting Valheim – " + APP_NAME)
+        self.splash = Splash(self.root, self.open_game_log, self.root.destroy)
+        self.root.withdraw()
         self.watcher = LaunchWatcher(self.core.game_log)
         self.sp_started = time.monotonic()
         self.sp_last_change = (self.sp_started, -1)
@@ -246,16 +326,16 @@ class LauncherWindow:
         self.root.after(500, self.poll_splash)
 
     def poll_splash(self) -> None:
+        sp = self.splash
         st = self.watcher.poll()
         now = time.monotonic()
         elapsed = now - self.sp_started
         if st.loaded != self.sp_last_change[1]:
             self.sp_last_change = (now, st.loaded)
         if st.phase == "ready":
-            self.sp_bar.stop()
-            self.sp_bar.configure(mode="determinate", value=1000)
-            self.sp_status.set("Mods loaded. Valheim is opening!")
-            self.sp_detail.set(f"{st.loaded} mods loaded" + (f", {len(st.errors)} errors in the game log" if st.errors else ""))
+            sp.determinate(1.0)
+            sp.status.set("Mods loaded. Valheim is opening!")
+            sp.detail.set(f"{st.loaded} mods loaded" + (f", {len(st.errors)} errors in the game log" if st.errors else ""))
             if st.loaded:
                 self.core.settings.last_mod_count = str(st.loaded)
                 try:
@@ -267,27 +347,24 @@ class LauncherWindow:
             return
         if st.phase == "loading":
             if self.sp_expected:
-                if str(self.sp_bar["mode"]) != "determinate":
-                    self.sp_bar.stop()
-                    self.sp_bar.configure(mode="determinate")
-                self.sp_bar.configure(value=min(990, 1000 * st.loaded / self.sp_expected))
-                self.sp_status.set(f"Loading mods… {st.loaded} of {self.sp_expected}")
+                sp.determinate(min(0.99, st.loaded / self.sp_expected))
+                sp.status.set(f"Loading mods… {st.loaded} of {self.sp_expected}")
             else:
-                self.sp_status.set(f"Loading mods… {st.loaded}")
+                sp.status.set(f"Loading mods… {st.loaded}")
             detail = st.last_mod
             if now - self.sp_last_change[0] > STALL_WARN_SECONDS:
                 detail = f"Still on {st.last_mod}… this one is slow. 'Open game log' shows what BepInEx is doing."
-            self.sp_detail.set(detail)
+            sp.detail.set(detail)
         elif st.phase == "starting":
-            self.sp_status.set("Valheim is starting, loading BepInEx…")
-            self.sp_detail.set("")
+            sp.status.set("Valheim is starting, loading BepInEx…")
+            sp.detail.set("")
         elif elapsed > WAIT_WARN_SECONDS:
-            self.sp_status.set("Valheim hasn't started yet.")
-            self.sp_detail.set("Make sure Steam is running and signed in. It can also just be slow. "
-                               "This window keeps watching.")
+            sp.status.set("Valheim hasn't started yet.")
+            sp.detail.set("Make sure Steam is running and signed in. It can also just be slow. "
+                          "This window keeps watching.")
         if elapsed > GIVE_UP_SECONDS:
-            self.sp_bar.stop()
-            self.sp_status.set("Stopped watching. Valheim may still be starting.")
+            sp.stop()
+            sp.status.set("Stopped watching. Valheim may still be starting.")
             return
         self.root.after(500, self.poll_splash)
 
@@ -315,7 +392,9 @@ class LauncherWindow:
     def run(self) -> int:
         # Settle the window's full size before any work starts, and don't let it shrink.
         self.root.update_idletasks()
-        self.root.minsize(self.root.winfo_reqwidth(), self.root.winfo_reqheight())
+        w, h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
+        self.root.minsize(w, h)
+        center(self.root, w, h)
         self.root.after(250, self.start_sync)
         self.root.after(80, self.poll)
         self.root.mainloop()

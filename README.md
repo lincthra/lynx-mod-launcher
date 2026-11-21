@@ -69,7 +69,7 @@ Snap, then `libraryfolders.vdf`. If that fails, the launcher asks for the folder
 
 ### After clicking Launch
 
-The launcher stays open as a splash screen. It shows the logo and follows BepInEx's
+The launcher turns into a borderless splash screen (animated lynx, dark theme) that follows BepInEx's
 `LogOutput.log`, so you see "Waiting for Steam…", then "Loading mods… 23 of 60" with the
 current mod's name. It closes once BepInEx reports "Chainloader startup complete".
 - **Progress bar:** the mod count comes from the previous launch.
