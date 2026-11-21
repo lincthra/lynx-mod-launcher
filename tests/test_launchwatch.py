@@ -78,3 +78,16 @@ def test_fallback_when_info_not_logged_to_disk(tmp_path):
     st = w.poll()
     assert st.phase == "loading" and st.loaded == 0
     assert st.mod_sources == 2 and st.last_mod == "Jotunn"  # newest line wins
+
+
+def test_reads_plugin_total(tmp_path):
+    log = tmp_path / "LogOutput.log"
+    w = LaunchWatcher(log, started_at=time.time() - 5)
+    log.write_text(
+        BEPINEX_START
+        + "[Message:   BepInEx] Chainloader started\n"
+        + "[Info   :   BepInEx] 87 plugins to load\n"
+        + "[Info   :   BepInEx] Loading [Jotunn 2.20.0]\n"
+    )
+    st = w.poll()
+    assert st.total == 87 and st.loaded == 1 and st.last_mod == "Jotunn 2.20.0"

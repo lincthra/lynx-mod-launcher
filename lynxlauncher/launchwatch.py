@@ -20,6 +20,7 @@ from pathlib import Path
 
 _LINE = re.compile(r"^\[(?P<level>\w+)\s*:\s*(?P<source>[^\]]*?)\s*\]\s?(?P<text>.*)$")
 _LOADING = re.compile(r"^Loading \[(?P<name>.+?)\]\s*$")
+_TOTAL = re.compile(r"^(?P<n>\d+) plugins? to load\s*$")  # BepInEx: "87 plugins to load"
 _READY = "Chainloader startup complete"
 # Log sources that belong to BepInEx/Unity itself, not to a mod.
 _CORE_SOURCES = {"bepinex", "preloader", "unity log", "harmonyx", "harmony", "mono", "doorstop", "monomod", ""}
@@ -29,6 +30,7 @@ _CORE_SOURCES = {"bepinex", "preloader", "unity log", "harmonyx", "harmony", "mo
 class LaunchState:
     phase: str = "waiting"  # waiting -> starting -> loading -> ready
     loaded: int = 0         # "Loading [...]" lines seen (0 if Info isn't logged to disk)
+    total: int = 0          # from BepInEx's "N plugins to load" line (0 until seen)
     last_mod: str = ""      # newest mod name from either signal
     mod_sources: int = 0    # distinct mod log sources seen (fallback signal)
     errors: list[str] = field(default_factory=list)
@@ -83,6 +85,10 @@ class LaunchWatcher:
         level, source, text = m.group("level").lower(), m.group("source"), m.group("text")
         if level in ("error", "fatal") and len(st.errors) < 20:
             st.errors.append(line)
+        tm = _TOTAL.match(text)
+        if tm:
+            st.total = int(tm.group("n"))
+            return
         lm = _LOADING.match(text)
         if lm:
             st.loaded += 1

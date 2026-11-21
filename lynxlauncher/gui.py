@@ -361,9 +361,10 @@ class LauncherWindow:
             sp.status.set("Loading mods…")
             sp.detail.set(st.last_mod)
         elif st.phase == "loading":
-            if self.sp_expected:
-                sp.determinate(min(0.99, st.loaded / self.sp_expected))
-                sp.status.set(f"Loading mods… {st.loaded} of {self.sp_expected}")
+            expected = st.total or self.sp_expected  # this launch's count, else last launch's
+            if expected:
+                sp.determinate(min(0.99, st.loaded / expected))
+                sp.status.set(f"Loading mods… {st.loaded} of {expected}")
             else:
                 sp.status.set(f"Loading mods… {st.loaded}")
             detail = st.last_mod
