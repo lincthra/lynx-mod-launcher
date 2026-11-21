@@ -53,6 +53,8 @@ jobs:
       - name: PyInstaller
         run: >
           pyinstaller --onefile --windowed --name LynxModLauncher
+          --icon lynxlauncher/assets/lynx.ico
+          --add-data "lynxlauncher/assets:lynxlauncher/assets"
           --collect-data certifi launcher_main.py
       - uses: actions/upload-artifact@v4
         with:

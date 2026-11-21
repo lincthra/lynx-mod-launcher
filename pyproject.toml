@@ -19,6 +19,9 @@ lynx-publish = "lynxlauncher.publisher:main"
 [tool.setuptools]
 packages = ["lynxlauncher"]
 
+[tool.setuptools.package-data]
+lynxlauncher = ["assets/*"]
+
 [tool.setuptools.dynamic]
 version = { attr = "lynxlauncher.__version__" }
 

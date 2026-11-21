@@ -26,6 +26,7 @@ class Settings:
     game_dir: str = ""
     launch_mode: str = "auto"  # auto | steam | direct (direct = run valheim.exe without Steam -applaunch; Windows only)
     auto_update: str = "yes"   # "no" = never replace the launcher exe with a newer release
+    last_mod_count: str = ""   # mods BepInEx loaded last time; sizes the splash progress bar
 
     @classmethod
     def load(cls, path: Path) -> "Settings":
@@ -128,6 +129,10 @@ class LauncherCore:
         result = Syncer(self.profile_dir, self.fetcher).run(self.manifest_url, progress or (lambda p: None))
         log.info("sync result: %s / %s", result.headline(), result.detail())
         return result
+
+    @property
+    def game_log(self) -> Path:
+        return self.profile_dir / "BepInEx" / "LogOutput.log"
 
     def can_launch(self) -> bool:
         return self.profile_dir.joinpath(*doorstop.PRELOADER_REL).is_file()

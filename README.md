@@ -67,6 +67,16 @@ one reached over rsync/SSH (`dest = "user@host:/srv/www/modpack"`).
 Steam is found via the Windows registry, `~/.steam`, `~/.local/share/Steam`, Flatpak or
 Snap, then `libraryfolders.vdf`. If that fails, the launcher asks for the folder once.
 
+### After clicking Launch
+
+The launcher stays open as a splash screen. It shows the logo and follows BepInEx's
+`LogOutput.log`, so you see "Waiting for Steam…", then "Loading mods… 23 of 60" with the
+current mod's name. It closes once BepInEx reports "Chainloader startup complete".
+- **Progress bar:** the mod count comes from the previous launch.
+- **Nothing happening:** after 90 seconds without any sign of Valheim it says so, and keeps watching.
+- **Buttons:** "Open game log" opens BepInEx's log folder, and "Close" dismisses the splash
+  at any time. It never touches the game.
+
 ### Self-update
 
 Every tagged release also publishes `latest.json` (version and SHA-256 for each exe). On start,

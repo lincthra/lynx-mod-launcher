@@ -16,10 +16,25 @@ from tkinter import filedialog, messagebox, ttk
 from . import APP_NAME, __version__, selfupdate
 from .doorstop import PROTON_LAUNCH_OPTIONS, DoorstopError
 from .launcher_app import LauncherCore
+from .launchwatch import LaunchWatcher
 from .paths import fmt_size
 from .sync import Progress, SyncResult
 
 log = logging.getLogger(__name__)
+
+ASSETS = Path(__file__).resolve().parent / "assets"
+
+WAIT_WARN_SECONDS = 90       # nothing in the BepInEx log by now: say so
+STALL_WARN_SECONDS = 180     # mod count hasn't moved for this long
+GIVE_UP_SECONDS = 600        # stop watching (window stays open)
+
+
+def load_image(name: str):
+    try:
+        return tk.PhotoImage(file=str(ASSETS / name))
+    except (tk.TclError, OSError) as e:
+        log.debug("couldn't load %s: %s", name, e)
+        return None
 
 
 class LauncherWindow:
@@ -32,12 +47,19 @@ class LauncherWindow:
 
         self.root = tk.Tk()
         self.root.title(APP_NAME)
+        self._icon = load_image("icon.png")
+        if self._icon:
+            self.root.iconphoto(True, self._icon)
+        self._header_img = load_image("header.png")
+        self._splash_img = load_image("splash.png")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         frm = ttk.Frame(self.root, padding=18)
         frm.grid(sticky="nsew")
-        ttk.Label(frm, text="Lynx Mod Launcher", font=("TkDefaultFont", 16, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+        self.main_frame = frm
+        ttk.Label(frm, text=" Lynx Mod Launcher", image=self._header_img or "", compound="left",
+                  font=("TkDefaultFont", 16, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(frm, text=f"v{__version__}", foreground="gray").grid(row=0, column=2, sticky="e")
 
         self.status = tk.StringVar(value="Starting…")
@@ -190,12 +212,93 @@ class LauncherWindow:
             log.exception("launch failed")
             messagebox.showerror(APP_NAME, f"Couldn't start Valheim: {e}", parent=self.root)
             return
-        self.status.set("Starting Valheim…")
-        self.launch_btn.state(["disabled"])
-        self.root.after(2500, self.root.destroy)
+        self.show_splash()
+
+    # -- splash while Valheim starts ------------------------------------------
+
+    def show_splash(self) -> None:
+        self.main_frame.grid_remove()
+        self.root.minsize(1, 1)
+        sp = ttk.Frame(self.root, padding=(28, 20))
+        sp.grid(sticky="nsew")
+        if self._splash_img:
+            ttk.Label(sp, image=self._splash_img).grid(row=0, column=0, columnspan=2, pady=(0, 12))
+        ttk.Label(sp, text="Starting Valheim", font=("TkDefaultFont", 16, "bold")).grid(row=1, column=0, columnspan=2)
+        self.sp_status = tk.StringVar(value="Waiting for Steam to start Valheim…")
+        ttk.Label(sp, textvariable=self.sp_status, font=("TkDefaultFont", 11)).grid(row=2, column=0, columnspan=2, pady=(6, 4))
+        self.sp_bar = ttk.Progressbar(sp, length=320, mode="indeterminate", maximum=1000)
+        self.sp_bar.grid(row=3, column=0, columnspan=2, pady=4)
+        self.sp_bar.start(15)
+        self.sp_detail = tk.StringVar(value="")
+        ttk.Label(sp, textvariable=self.sp_detail, foreground="gray", wraplength=340, justify="center").grid(
+            row=4, column=0, columnspan=2, pady=(4, 12))
+        ttk.Button(sp, text="Open game log", command=self.open_game_log).grid(row=5, column=0, sticky="w")
+        ttk.Button(sp, text="Close", command=self.root.destroy).grid(row=5, column=1, sticky="e")
+        sp.columnconfigure(0, weight=1)
+        self.root.title("Starting Valheim – " + APP_NAME)
+        self.watcher = LaunchWatcher(self.core.game_log)
+        self.sp_started = time.monotonic()
+        self.sp_last_change = (self.sp_started, -1)
+        try:
+            self.sp_expected = int(self.core.settings.last_mod_count or 0)
+        except ValueError:
+            self.sp_expected = 0
+        self.root.after(500, self.poll_splash)
+
+    def poll_splash(self) -> None:
+        st = self.watcher.poll()
+        now = time.monotonic()
+        elapsed = now - self.sp_started
+        if st.loaded != self.sp_last_change[1]:
+            self.sp_last_change = (now, st.loaded)
+        if st.phase == "ready":
+            self.sp_bar.stop()
+            self.sp_bar.configure(mode="determinate", value=1000)
+            self.sp_status.set("Mods loaded. Valheim is opening!")
+            self.sp_detail.set(f"{st.loaded} mods loaded" + (f", {len(st.errors)} errors in the game log" if st.errors else ""))
+            if st.loaded:
+                self.core.settings.last_mod_count = str(st.loaded)
+                try:
+                    self.core.settings.save()
+                except OSError:
+                    pass
+            log.info("Valheim started: %d mods loaded in %.0fs", st.loaded, elapsed)
+            self.root.after(4000, self.root.destroy)
+            return
+        if st.phase == "loading":
+            if self.sp_expected:
+                if str(self.sp_bar["mode"]) != "determinate":
+                    self.sp_bar.stop()
+                    self.sp_bar.configure(mode="determinate")
+                self.sp_bar.configure(value=min(990, 1000 * st.loaded / self.sp_expected))
+                self.sp_status.set(f"Loading mods… {st.loaded} of {self.sp_expected}")
+            else:
+                self.sp_status.set(f"Loading mods… {st.loaded}")
+            detail = st.last_mod
+            if now - self.sp_last_change[0] > STALL_WARN_SECONDS:
+                detail = f"Still on {st.last_mod}… this one is slow. 'Open game log' shows what BepInEx is doing."
+            self.sp_detail.set(detail)
+        elif st.phase == "starting":
+            self.sp_status.set("Valheim is starting, loading BepInEx…")
+            self.sp_detail.set("")
+        elif elapsed > WAIT_WARN_SECONDS:
+            self.sp_status.set("Valheim hasn't started yet.")
+            self.sp_detail.set("Make sure Steam is running and signed in. It can also just be slow. "
+                               "This window keeps watching.")
+        if elapsed > GIVE_UP_SECONDS:
+            self.sp_bar.stop()
+            self.sp_status.set("Stopped watching. Valheim may still be starting.")
+            return
+        self.root.after(500, self.poll_splash)
+
+    def open_game_log(self) -> None:
+        self._open_folder(self.core.game_log.parent)
 
     def open_logs(self) -> None:
-        folder = str(self.log_path.parent)
+        self._open_folder(self.log_path.parent)
+
+    def _open_folder(self, path: Path) -> None:
+        folder = str(path)
         try:
             if sys.platform.startswith("win"):
                 os.startfile(folder)  # type: ignore[attr-defined]
