@@ -559,6 +559,30 @@ def publish(
     return manifest
 
 
+def report_mod_updates(cfg: PublishConfig, out: Callable[[str], None], quiet: bool = False) -> int:
+    """Print mods with newer versions on Thunderstore/Hexium. Never fails a publish."""
+    from .http import HttpFetcher
+    from .modupdates import check, installed_mods
+
+    try:
+        mods = installed_mods(cfg.source)
+        updates = check(mods, HttpFetcher(timeout=8).get_bytes)
+    except Exception as e:  # noqa: BLE001
+        if not quiet:
+            out(f"Couldn't check for mod updates: {e}")
+        return 0
+    if not updates:
+        if not quiet:
+            out(f"All {len(mods)} mods are up to date on Thunderstore/Hexium.")
+        return 0
+    if quiet:
+        out("")
+    out(f"{len(updates)} mod update(s) available (update in Gale, then publish):")
+    for u in updates:
+        out(f"  {u.line()}  {u.url}")
+    return len(updates)
+
+
 def default_config_path() -> Path:
     local = Path("publish.toml")
     if local.is_file():
@@ -579,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
     grp.add_argument("--server-only", action="store_true", help="only push to the game server; don't publish for friends")
     ap.add_argument("--confirm", action="store_true", help="do a dry run first, then ask before doing it for real")
     ap.add_argument("--prune", action="store_true", help="delete objects no longer referenced (run when nobody is mid-update)")
+    ap.add_argument("--check-updates", action="store_true", help="only list mods with newer versions on Thunderstore/Hexium")
     args = ap.parse_args(argv)
     log = PublishLog()
     log.detail(f"lynx-publish {' '.join(argv if argv is not None else sys.argv[1:])}  ({datetime.now().isoformat(timespec='seconds')})")
@@ -594,6 +619,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         cfg = load_config(args.config or default_config_path(), args.profile)
+        if args.check_updates:
+            report_mod_updates(cfg, log)
+            print(f"Full log: {log.path}")
+            log.close()
+            return 0
         if args.confirm and not args.dry_run:
             run(True)
             log("")
@@ -609,6 +639,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             log("")
         run(args.dry_run)
+        if not args.server_only:
+            report_mod_updates(cfg, log, quiet=True)  # a heads-up only; silent when nothing's new
     except PublishError as e:
         log.detail(f"error: {e}")
         print(f"error: {e}\nNothing was published.", file=sys.stderr)

@@ -117,6 +117,15 @@ lynx-publish --confirm                 # dry run first, then ask "Go ahead?"
 
 A dry run lists exactly which files would be uploaded, or says everything is already published.
 
+### Mod update check
+
+On the PC with `~/.config/lynx-mod-launcher/publish.toml` (yours), the launcher checks the Gale
+profile's mods against Thunderstore and Hexium and shows "N mod updates available in Gale" under
+the buttons. Click it for the list. Friends never see this. `lynx-publish --check-updates` prints
+the same list, and a normal publish mentions any updates at the end. Nothing is installed: update
+in Gale, then publish. Versions come from Gale's `data.sqlite3` (each mod's own site; zip imports
+are checked on both), falling back to `BepInEx/plugins/*/manifest.json`.
+
 ### Desktop shortcuts (Linux)
 
 `scripts/install-shortcuts.sh` adds **Publish Modpack** (`--no-server --confirm`) and

@@ -59,6 +59,7 @@ def apply_theme(root: tk.Tk) -> None:
     s.configure("TFrame", background=BG)
     s.configure("TLabel", background=BG, foreground=FG)
     s.configure("Muted.TLabel", foreground=MUTED)
+    s.configure("Link.TLabel", foreground=GREEN_HI)
     s.configure("TButton", background=BTN, foreground=FG, bordercolor=BORDER, lightcolor=BTN, darkcolor=BTN,
                 padding=(14, 6), relief="flat")
     s.map("TButton", background=[("disabled", BG), ("pressed", BTN_HI), ("active", BTN_HI)],
@@ -183,6 +184,14 @@ class LauncherWindow:
         self.launch_btn = ttk.Button(frm, text="Launch", style="Accent.TButton", command=self.on_launch, state="disabled")
         self.launch_btn.grid(row=4, column=2, sticky="e")
         frm.columnconfigure(1, weight=1)
+        # Only on the publisher's PC: "N mod updates available in Gale" (hidden otherwise).
+        self.mod_updates: list = []
+        self.updates_text = tk.StringVar(value="")
+        self.updates_lbl = ttk.Label(frm, textvariable=self.updates_text, style="Link.TLabel",
+                                     wraplength=420, justify="left", cursor="hand2")
+        self.updates_lbl.grid(row=5, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        self.updates_lbl.grid_remove()
+        self.updates_lbl.bind("<Button-1>", lambda _e: self.show_mod_updates())
         self.root.bind("<Return>", lambda _e: self.on_launch() if str(self.launch_btn["state"]) == "normal" else None)
 
     # -- sync in a background thread --------------------------------------
@@ -243,6 +252,8 @@ class LauncherWindow:
                         messagebox.showinfo(APP_NAME, "The launcher was updated. Please start it again.", parent=self.root)
                     self.root.after(300, self.root.destroy)
                     return
+                elif kind == "mod_updates":
+                    self._on_mod_updates(value)
                 else:
                     done = value
         except queue.Empty:
@@ -280,6 +291,44 @@ class LauncherWindow:
             detail = (detail + "\n" if detail else "") + "The mods haven't been downloaded yet, so there's nothing to launch."
         self.detail.set(detail)
         self.retry_btn.state(["!disabled"])
+
+    # -- mod updates (publisher's PC only) ------------------------------------
+
+    def start_mod_update_check(self) -> None:
+        cfg_path = publisher_config_path()
+        if not cfg_path.is_file():
+            return  # a friend's PC: Michael's Gale isn't here
+
+        def work() -> None:
+            try:
+                from .http import HttpFetcher
+                from .modupdates import check, installed_mods
+                from .publisher import load_config
+
+                cfg = load_config(cfg_path)
+                updates = check(installed_mods(cfg.source), HttpFetcher(timeout=8).get_bytes)
+                log.info("mod update check: %d update(s)%s", len(updates),
+                         "".join(f"\n  {u.line()}" for u in updates))
+                self.events.put(("mod_updates", updates))
+            except Exception:  # noqa: BLE001 - only a hint; never get in the way
+                log.warning("mod update check failed", exc_info=True)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_mod_updates(self, updates: list) -> None:
+        from .modupdates import summary
+
+        self.mod_updates = updates
+        if updates:
+            self.updates_text.set("⬆ " + summary(updates) + " (click for details)")
+            self.updates_lbl.grid()
+        else:
+            self.updates_lbl.grid_remove()
+
+    def show_mod_updates(self) -> None:
+        lines = "\n".join(u.line() for u in self.mod_updates)
+        messagebox.showinfo(APP_NAME, f"Newer versions are out:\n\n{lines}\n\n"
+                                      "Update them in Gale, then publish as usual.", parent=self.root)
 
     # -- launch --------------------------------------------------------------
 
@@ -412,9 +461,15 @@ class LauncherWindow:
         w, h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
         self.root.minsize(w, h)  # placement is left to the window manager (right monitor)
         self.root.after(250, self.start_sync)
+        self.root.after(1500, self.start_mod_update_check)
         self.root.after(80, self.poll)
         self.root.mainloop()
         return 0
+
+
+def publisher_config_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "lynx-mod-launcher" / "publish.toml"
 
 
 def throttled(fn, interval: float = 0.1):
