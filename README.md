@@ -96,6 +96,7 @@ lynx-publish --prune                   # also delete files no longer used
   password found in the PridelandsPoV profile.
 - **Secrets guard:** a file whose name looks like a password, token or key stops the publish
   until you exclude it or list it in `allow_secrets`.
+- Every run writes a full log to `~/.local/state/lynx-mod-launcher/publish-logs/` (newest 30 kept): the complete file list and every rsync line. The terminal shows only a summary and real changes, and ends with the log's path.
 - Close Gale and the game while publishing. If a file changes mid-publish, it stops.
 - The server push leaves extra server files alone unless `delete = true`. Restart the server
   afterwards.

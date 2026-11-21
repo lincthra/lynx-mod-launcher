@@ -108,3 +108,45 @@ def test_parse_rsync_list():
            "drwxr-xr-x          4,096 2026/10/17 18:59:00 Bryheim-Kvist\n"
            "-rw-r--r--         12,345 2026/10/17 18:59:00 Loose Mod.dll\n")
     assert parse_rsync_list(out) == {"Bryheim-Kvist", "Loose Mod.dll"}
+
+
+def test_run_logs_everything_but_prints_only_changes(tmp_path, capsys):
+    import sys
+    from lynxlauncher.publisher import PublishLog, _run
+    script = tmp_path / "fake_rsync.py"
+    script.write_text(
+        "print('.d..t...... BepInEx/plugins/')\n"
+        "print('.f..t...... BepInEx/plugins/A/A.dll')\n"
+        "print('<fcst...... BepInEx/plugins/LynxInc-LynxModFixes/LynxModFixes.dll')\n"
+        "print('cd+++++++++ BepInEx/plugins/New/')\n"
+        "print('*deleting   BepInEx/plugins/Old.dll')\n")
+    log = PublishLog(tmp_path / "logs")
+    n = _run([sys.executable, str(script)], log)
+    log.close()
+    printed = capsys.readouterr().out
+    text = log.path.read_text()
+    assert n == 3
+    assert "LynxModFixes.dll" in printed and "New/" in printed and "Old.dll" in printed
+    assert "A/A.dll" not in printed and "A/A.dll" in text  # attribute-only: log only
+
+
+def test_publish_log_rotation(tmp_path):
+    from lynxlauncher.publisher import PublishLog
+    d = tmp_path / "logs"
+    d.mkdir()
+    for i in range(5):
+        (d / f"publish-2020-01-0{i}_000000.log").write_text("old")
+    PublishLog(d, keep=3).close()
+    assert len(list(d.glob("publish-*.log"))) == 3
+
+
+def test_main_writes_log_file(gale_profile, web_root, tmp_path, monkeypatch, capsys):
+    from lynxlauncher import publisher
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    cfg = tmp_path / "p.toml"
+    cfg.write_text(f'source = "{gale_profile.as_posix()}"\ndest = "{web_root.as_posix()}"\n')
+    assert publisher.main(["-c", str(cfg), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "Full log:" in out and "ModB.dll" not in out
+    logs = list((tmp_path / "state/lynx-mod-launcher/publish-logs").glob("*.log"))
+    assert len(logs) == 1 and "ModB.dll" in logs[0].read_text()

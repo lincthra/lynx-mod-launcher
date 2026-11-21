@@ -53,6 +53,43 @@ GALE_PROFILES = Path("~/.local/share/com.kesomannen.gale/valheim/profiles")
 Out = Callable[[str], None]
 
 
+def detail(out: Out, msg: str) -> None:
+    """Log-file-only output (full file lists, every rsync line). No-op for plain callables."""
+    fn = getattr(out, "detail", None)
+    if fn:
+        fn(msg)
+
+
+def state_dir() -> Path:
+    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(base) / "lynx-mod-launcher"
+
+
+class PublishLog:
+    """Console gets the summary; the log file gets everything. Keeps the newest `keep` logs."""
+
+    def __init__(self, log_dir: Path | None = None, keep: int = 30):
+        self.dir = log_dir or state_dir() / "publish-logs"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        self.path = self.dir / f"publish-{stamp}.log"
+        self._f = open(self.path, "w", encoding="utf-8")
+        old = sorted(self.dir.glob("publish-*.log"))[:-keep]
+        for f in old:
+            f.unlink(missing_ok=True)
+
+    def __call__(self, msg: str) -> None:
+        print(msg, flush=True)
+        self.detail(msg)
+
+    def detail(self, msg: str) -> None:
+        self._f.write(msg.rstrip("\n") + "\n")
+        self._f.flush()
+
+    def close(self) -> None:
+        self._f.close()
+
+
 @dataclass
 class ServerConfig:
     enabled: bool = False
@@ -146,13 +183,29 @@ def is_remote(dest: str) -> bool:
     return github_repo(dest) is None and bool(re.match(r"^[^/\\:]{2,}:", dest))
 
 
-def _run(cmd: list[str], out: Out) -> None:
-    out("  $ " + " ".join(cmd))
+_UNCHANGED = re.compile(r"^\.[fdL]\.\.[t.][p.][o.][g.]\.{3,} ")  # rsync -i: attribute-only lines
+
+
+def _run(cmd: list[str], out: Out) -> int:
+    """Run a command; every output line goes to the log, real changes also to the console.
+    Returns the number of changed items rsync reported."""
+    detail(out, "  $ " + " ".join(cmd))
     if shutil.which(cmd[0]) is None:
         raise PublishError(f"{cmd[0]} is not installed")
-    proc = subprocess.run(cmd)
-    if proc.returncode != 0:
-        raise PublishError(f"{cmd[0]} failed with exit code {proc.returncode}")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    changes = 0
+    tail: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        detail(out, "    " + line)
+        tail = (tail + [line])[-15:]
+        if line and not _UNCHANGED.match(line) and not line.startswith(("sending ", "sent ", "total size")):
+            changes += 1
+            out("    " + line)
+    if proc.wait() != 0:
+        raise PublishError(f"{cmd[0]} failed with exit code {proc.returncode}:\n" + "\n".join(tail))
+    return changes
 
 
 def _copy_verified(src: Path, dst: Path, sha: str) -> None:
@@ -380,7 +433,7 @@ def push_to_server(cfg: PublishConfig, dry_run: bool, out: Out) -> None:
                     d.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(full, d)
                 stage.joinpath(*sub.split("/")).mkdir(parents=True, exist_ok=True)
-                cmd = ["rsync", "-rt", "--checksum", "--relative", "-i", *srv.rsync_args]
+                cmd = ["rsync", "-r", "--checksum", "--relative", "-i", *srv.rsync_args]
                 if srv.delete:
                     cmd.append("--delete")
                     cmd += [f"--filter=P /{sub}/{name}" for name in sorted(protect)]
@@ -388,7 +441,8 @@ def push_to_server(cfg: PublishConfig, dry_run: bool, out: Out) -> None:
                     cmd.append("--dry-run")
                 # "/./" tells --relative where the path to recreate on the server starts
                 cmd += [f"{stage}/./{sub}/", srv.dest.rstrip("/") + "/"]
-                _run(cmd, out)
+                n = _run(cmd, out)
+                out(f"  {sub}: {n} change(s)" + (" would be made" if dry_run else ""))
             continue
         dst_root = Path(srv.dest).expanduser().joinpath(*sub.split("/"))
         copied = removed = 0
@@ -446,10 +500,12 @@ def publish(
     for pattern in cfg.keep:
         if not any(PathMatcher([pattern]).matches(e.path) for e in manifest.files):
             out(f"  note: keep pattern {pattern!r} matches nothing in the profile (fine for files the game creates)")
-    if list_files or dry_run:
-        for e in manifest.files:
-            flag = " [keep]" if keep.matches(e.path) else ""
-            out(f"  {e.size:>10}  {e.path}{flag}")
+    for e in manifest.files:  # full list always goes to the log; --list also prints it
+        flag = " [keep]" if keep.matches(e.path) else ""
+        line = f"  {e.size:>10}  {e.path}{flag}"
+        out(line) if list_files else detail(out, line)
+    if dry_run and not list_files:
+        out("  (full file list is in the log; add --list to print it)")
     if dry_run:
         out("Dry run: nothing published.")
     else:
@@ -485,12 +541,19 @@ def main(argv: list[str] | None = None) -> int:
     grp.add_argument("--no-server", dest="server", action="store_false", help="skip the game server push")
     ap.add_argument("--prune", action="store_true", help="delete objects no longer referenced (run when nobody is mid-update)")
     args = ap.parse_args(argv)
+    log = PublishLog()
+    log.detail(f"lynx-publish {' '.join(argv if argv is not None else sys.argv[1:])}  ({datetime.now().isoformat(timespec='seconds')})")
     try:
         cfg = load_config(args.config or default_config_path(), args.profile)
-        publish(cfg, dry_run=args.dry_run, list_files=args.list, push_server=args.server, prune=args.prune)
+        publish(cfg, dry_run=args.dry_run, list_files=args.list, push_server=args.server, prune=args.prune, out=log)
     except PublishError as e:
+        log.detail(f"error: {e}")
         print(f"error: {e}\nNothing was published.", file=sys.stderr)
+        print(f"Full log: {log.path}", file=sys.stderr)
+        log.close()
         return 1
+    print(f"Full log: {log.path}")
+    log.close()
     return 0
 
 
