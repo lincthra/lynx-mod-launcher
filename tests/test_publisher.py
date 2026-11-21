@@ -47,7 +47,7 @@ def test_server_push_local(gale_profile, web_root, tmp_path):
     write(srv, "BepInEx/plugins/OldServerMod.dll", b"old")
     write(srv, "BepInEx/plugins/ModB.dll", b"stale")
     cfg = PublishConfig(source=gale_profile, dest=str(web_root),
-                        server=ServerConfig(enabled=True, dest=str(srv), exclude=["BepInEx/plugins/ModA/"]))
+                        server=ServerConfig(enabled=True, dest=str(srv), exclude=["BepInEx/plugins/ModA/"], existing_only=False))
     publish(cfg, dry_run=True, **quiet)
     assert (srv / "BepInEx/plugins/ModB.dll").read_bytes() == b"stale"  # dry run
     publish(cfg, **quiet)
@@ -62,7 +62,7 @@ def test_server_push_local(gale_profile, web_root, tmp_path):
 def test_server_push_skipped_unless_enabled(gale_profile, web_root, tmp_path):
     srv = tmp_path / "srv"
     srv.mkdir()
-    cfg = PublishConfig(source=gale_profile, dest=str(web_root), server=ServerConfig(dest=str(srv)))
+    cfg = PublishConfig(source=gale_profile, dest=str(web_root), server=ServerConfig(dest=str(srv), existing_only=False))
     publish(cfg, **quiet)
     assert not any(srv.iterdir())
     publish(cfg, push_server=True, **quiet)
@@ -85,3 +85,26 @@ def test_load_config(tmp_path):
 ])
 def test_is_remote(dest, remote):
     assert is_remote(dest) is remote
+
+
+def test_server_existing_only_never_adds_client_mods(gale_profile, web_root, tmp_path):
+    srv = tmp_path / "srv"
+    write(srv, "BepInEx/plugins/ModA/ModA.dll", b"old a")              # server mod, out of date
+    write(srv, "BepInEx/plugins/Server_devcommands/dc.dll", b"server")  # server-only mod
+    cfg = PublishConfig(source=gale_profile, dest=str(web_root),
+                        server=ServerConfig(enabled=True, dest=str(srv), delete=True))
+    publish(cfg, **quiet)
+    assert (srv / "BepInEx/plugins/ModA/ModA.dll").read_bytes() == b"mod a v1"   # updated
+    assert not (srv / "BepInEx/plugins/ModB.dll").exists()                      # client mod not added
+    assert (srv / "BepInEx/plugins/Server_devcommands/dc.dll").exists()        # protected even with delete
+    cfg.server.existing_only = False
+    publish(cfg, **quiet)
+    assert (srv / "BepInEx/plugins/ModB.dll").exists()
+
+
+def test_parse_rsync_list():
+    from lynxlauncher.publisher import parse_rsync_list
+    out = ("drwxr-xr-x          4,096 2026/10/17 18:59:00 .\n"
+           "drwxr-xr-x          4,096 2026/10/17 18:59:00 Bryheim-Kvist\n"
+           "-rw-r--r--         12,345 2026/10/17 18:59:00 Loose Mod.dll\n")
+    assert parse_rsync_list(out) == {"Bryheim-Kvist", "Loose Mod.dll"}

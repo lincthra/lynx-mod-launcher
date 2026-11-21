@@ -53,5 +53,6 @@ enabled = false
 dest = "root@10.0.0.99:/var/lib/pelican/volumes/SERVER-UUID"
 paths = ["BepInEx/plugins"]         # add "BepInEx/config" to sync configs as well
 exclude = []                        # client-only mods to keep off the server, e.g. ["BepInEx/plugins/seneaL-SeneaL_UI/"]
-delete = false                      # true = also remove server files that aren't in the profile
+existing_only = true                # only update mod folders the server already has; client-only mods never get added
+delete = false                      # true = also remove files inside those folders that the profile no longer has
 rsync_args = []                     # e.g. ["--chown=pelican:pelican"]

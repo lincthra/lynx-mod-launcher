@@ -61,6 +61,10 @@ class ServerConfig:
     exclude: list[str] = field(default_factory=list)
     delete: bool = False
     rsync_args: list[str] = field(default_factory=list)
+    # Only update mod folders the server already has; never add new ones. Client-only
+    # mods stay off the server without having to list them. Add a new server mod once by
+    # hand (or with existing_only = false for one run) and it's kept in sync after that.
+    existing_only: bool = True
 
 
 @dataclass
@@ -117,6 +121,7 @@ def load_config(path: Path, profile: str | None = None) -> PublishConfig:
         paths=_str_list(srv, "paths") if "paths" in srv else ["BepInEx/plugins"],
         exclude=_str_list(srv, "exclude"),
         delete=bool(srv.get("delete", False)),
+        existing_only=bool(srv.get("existing_only", True)),
         rsync_args=_str_list(srv, "rsync_args"),
     )
     return PublishConfig(
@@ -322,6 +327,29 @@ def check_dest(dest: str) -> None:
         raise PublishError(f"dest folder doesn't exist: {path}\nCreate it first (mkdir -p {path}) or fix 'dest' in your settings.")
 
 
+def parse_rsync_list(output: str) -> set[str]:
+    """Names from `rsync --list-only` output ("drwxr-xr-x  4,096 2026/10/17 18:59:00 Name")."""
+    names = set()
+    for line in output.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) == 5 and parts[4] not in (".", ".."):
+            names.add(parts[4])
+    return names
+
+
+def server_entries(dest: str, sub: str, rsync_args: list[str]) -> set[str]:
+    """Top-level names currently in <dest>/<sub> on the server (empty if the folder is missing)."""
+    if is_remote(dest):
+        args = [a for a in rsync_args if not a.startswith("--chown")]
+        proc = subprocess.run(["rsync", "--list-only", *args, dest.rstrip("/") + f"/{sub}/"],
+                              capture_output=True, text=True)
+        if proc.returncode not in (0, 23):  # 23: folder doesn't exist yet
+            raise PublishError(f"couldn't list {dest}/{sub}: {proc.stderr.strip()}")
+        return parse_rsync_list(proc.stdout)
+    root = Path(dest).expanduser().joinpath(*sub.split("/"))
+    return {p.name for p in root.iterdir()} if root.is_dir() else set()
+
+
 def push_to_server(cfg: PublishConfig, dry_run: bool, out: Out) -> None:
     srv = cfg.server
     if not srv.dest:
@@ -335,6 +363,15 @@ def push_to_server(cfg: PublishConfig, dry_run: bool, out: Out) -> None:
             raise PublishError(f"server path {sub!r}: {e}") from e
         src_root = cfg.source.joinpath(*sub.split("/"))
         files = {rel: full for rel, full in iter_files(src_root) if not exclude.matches(f"{sub}/{rel}")}
+        protect: set[str] = set()
+        if srv.existing_only:
+            on_server = server_entries(srv.dest, sub, srv.rsync_args)
+            ours = {rel.split("/", 1)[0] for rel in files}
+            skipped = sorted(ours - on_server)
+            if skipped:
+                out(f"  {sub}: skipping {len(skipped)} not on the server (existing_only): {', '.join(skipped)}")
+            files = {rel: full for rel, full in files.items() if rel.split("/", 1)[0] in on_server}
+            protect = on_server - ours  # server-only mods: never touched, even with delete = true
         if is_remote(srv.dest):
             with tempfile.TemporaryDirectory(prefix="lynx-srv-") as td:
                 stage = Path(td)
@@ -346,6 +383,7 @@ def push_to_server(cfg: PublishConfig, dry_run: bool, out: Out) -> None:
                 cmd = ["rsync", "-rt", "--checksum", "--relative", "-i", *srv.rsync_args]
                 if srv.delete:
                     cmd.append("--delete")
+                    cmd += [f"--filter=P /{sub}/{name}" for name in sorted(protect)]
                 if dry_run:
                     cmd.append("--dry-run")
                 # "/./" tells --relative where the path to recreate on the server starts
@@ -365,7 +403,7 @@ def push_to_server(cfg: PublishConfig, dry_run: bool, out: Out) -> None:
             copied += 1
         if srv.delete:
             for rel, full in list(iter_files(dst_root)):
-                if rel not in files and not exclude.matches(f"{sub}/{rel}"):
+                if rel not in files and not exclude.matches(f"{sub}/{rel}") and rel.split("/", 1)[0] not in protect:
                     out(f"  {'would delete' if dry_run else 'delete'} {sub}/{rel}")
                     if not dry_run:
                         full.unlink()
