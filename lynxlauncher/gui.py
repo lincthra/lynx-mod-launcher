@@ -71,9 +71,17 @@ def apply_theme(root: tk.Tk) -> None:
                 lightcolor=GREEN, darkcolor=GREEN, thickness=8)
 
 
-def center(win: tk.Misc, w: int, h: int, y_frac: float = 0.4) -> None:
-    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-    win.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, int((sh - h) * y_frac))}")
+def center_over(win: tk.Misc, w: int, h: int, ref: tk.Misc) -> None:
+    """Center `win` over `ref` (the main window), so it lands on the monitor the user is
+    looking at. Tk's screen size is the whole multi-monitor desktop, so centering on
+    the "screen" would put it between monitors."""
+    rx, ry = ref.winfo_rootx(), ref.winfo_rooty()
+    rw, rh = ref.winfo_width(), ref.winfo_height()
+    if rw <= 1:  # not mapped yet: fall back to the pointer's position
+        rx, ry, rw, rh = ref.winfo_pointerx(), ref.winfo_pointery(), 0, 0
+    x = max(0, rx + (rw - w) // 2)
+    y = max(0, ry + (rh - h) // 2)
+    win.geometry(f"{w}x{h}+{x}+{y}")
 
 
 class Splash:
@@ -108,7 +116,7 @@ class Splash:
             w.bind("<ButtonPress-1>", self._drag_start)
             w.bind("<B1-Motion>", self._drag)
         top.bind("<Escape>", lambda _e: on_close())
-        center(top, 380, 480)
+        center_over(top, 380, 480, parent)
         top.lift()
         self._animate()
 
@@ -330,12 +338,14 @@ class LauncherWindow:
         st = self.watcher.poll()
         now = time.monotonic()
         elapsed = now - self.sp_started
-        if st.loaded != self.sp_last_change[1]:
-            self.sp_last_change = (now, st.loaded)
+        progress = (st.loaded, st.mod_sources, st.last_mod)
+        if progress != self.sp_last_change[1]:
+            self.sp_last_change = (now, progress)
         if st.phase == "ready":
             sp.determinate(1.0)
             sp.status.set("Mods loaded. Valheim is opening!")
-            sp.detail.set(f"{st.loaded} mods loaded" + (f", {len(st.errors)} errors in the game log" if st.errors else ""))
+            done = f"{st.loaded} mods loaded" if st.loaded else "All mods loaded"
+            sp.detail.set(done + (f", {len(st.errors)} errors in the game log" if st.errors else ""))
             if st.loaded:
                 self.core.settings.last_mod_count = str(st.loaded)
                 try:
@@ -345,7 +355,12 @@ class LauncherWindow:
             log.info("Valheim started: %d mods loaded in %.0fs", st.loaded, elapsed)
             self.root.after(4000, self.root.destroy)
             return
-        if st.phase == "loading":
+        if st.phase == "loading" and not st.loaded:
+            # This profile doesn't write Info lines to disk, so there's no exact count: show the
+            # mod that's talking most recently instead.
+            sp.status.set("Loading mods…")
+            sp.detail.set(st.last_mod)
+        elif st.phase == "loading":
             if self.sp_expected:
                 sp.determinate(min(0.99, st.loaded / self.sp_expected))
                 sp.status.set(f"Loading mods… {st.loaded} of {self.sp_expected}")
@@ -393,8 +408,7 @@ class LauncherWindow:
         # Settle the window's full size before any work starts, and don't let it shrink.
         self.root.update_idletasks()
         w, h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
-        self.root.minsize(w, h)
-        center(self.root, w, h)
+        self.root.minsize(w, h)  # placement is left to the window manager (right monitor)
         self.root.after(250, self.start_sync)
         self.root.after(80, self.poll)
         self.root.mainloop()
