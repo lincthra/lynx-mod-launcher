@@ -198,11 +198,12 @@ def _run(cmd: list[str], out: Out) -> int:
     assert proc.stdout is not None
     for line in proc.stdout:
         line = line.rstrip("\n")
-        detail(out, "    " + line)
         tail = (tail + [line])[-15:]
         if line and not _UNCHANGED.match(line) and not line.startswith(("sending ", "sent ", "total size")):
             changes += 1
-            out("    " + line)
+            out("    " + line)  # console + log
+        else:
+            detail(out, "    " + line)  # log only
     if proc.wait() != 0:
         raise PublishError(f"{cmd[0]} failed with exit code {proc.returncode}:\n" + "\n".join(tail))
     return changes
