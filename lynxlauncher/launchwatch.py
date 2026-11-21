@@ -19,9 +19,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _LINE = re.compile(r"^\[(?P<level>\w+)\s*:\s*(?P<source>[^\]]*?)\s*\]\s?(?P<text>.*)$")
-_LOADING = re.compile(r"^Loading \[(?P<name>.+?)\]\s*$")
+# BepInEx 5.4.23 appends the GUID: "Loading [Jotunn 2.30.2] (com.jotunn.jotunn)"
+_LOADING = re.compile(r"^Loading \[(?P<name>[^\]]+)\]")
 _TOTAL = re.compile(r"^(?P<n>\d+) plugins? to load\s*$")  # BepInEx: "87 plugins to load"
 _READY = "Chainloader startup complete"
+_READY_COUNT = re.compile(r"\((?P<n>\d+) loaded")  # "...complete (61 loaded, 0 skipped, 0 failed)"
 # Log sources that belong to BepInEx/Unity itself, not to a mod.
 _CORE_SOURCES = {"bepinex", "preloader", "unity log", "harmonyx", "harmony", "mono", "doorstop", "monomod", ""}
 
@@ -31,6 +33,7 @@ class LaunchState:
     phase: str = "waiting"  # waiting -> starting -> loading -> ready
     loaded: int = 0         # "Loading [...]" lines seen (0 if Info isn't logged to disk)
     total: int = 0          # from BepInEx's "N plugins to load" line (0 until seen)
+    final: int = 0          # from "Chainloader startup complete (N loaded, ...)" (Message level)
     last_mod: str = ""      # newest mod name from either signal
     mod_sources: int = 0    # distinct mod log sources seen (fallback signal)
     errors: list[str] = field(default_factory=list)
@@ -78,6 +81,9 @@ class LaunchWatcher:
         st = self.state
         if _READY in line:
             st.phase = "ready"
+            rc = _READY_COUNT.search(line)
+            if rc:
+                st.final = int(rc.group("n"))
             return
         m = _LINE.match(line)
         if not m:

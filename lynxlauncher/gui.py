@@ -344,15 +344,16 @@ class LauncherWindow:
         if st.phase == "ready":
             sp.determinate(1.0)
             sp.status.set("Mods loaded. Valheim is opening!")
-            done = f"{st.loaded} mods loaded" if st.loaded else "All mods loaded"
+            count = st.final or st.loaded
+            done = f"{count} mods loaded" if count else "All mods loaded"
             sp.detail.set(done + (f", {len(st.errors)} errors in the game log" if st.errors else ""))
-            if st.loaded:
-                self.core.settings.last_mod_count = str(st.loaded)
+            if count:
+                self.core.settings.last_mod_count = str(count)
                 try:
                     self.core.settings.save()
                 except OSError:
                     pass
-            log.info("Valheim started: %d mods loaded in %.0fs", st.loaded, elapsed)
+            log.info("Valheim started: %d mods loaded in %.0fs (%d Loading lines seen)", count, elapsed, st.loaded)
             self.root.after(4000, self.root.destroy)
             return
         if st.phase == "loading" and not st.loaded:

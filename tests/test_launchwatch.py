@@ -91,3 +91,28 @@ def test_reads_plugin_total(tmp_path):
     )
     st = w.poll()
     assert st.total == 87 and st.loaded == 1 and st.last_mod == "Jotunn 2.20.0"
+
+
+REAL_5_4_23 = """[Message:   BepInEx] Chainloader ready
+[Info   :LMF Startup] Bundle cache: on (10 AssetBundle load methods; cache in BepInEx/cache/LMF_bundles)
+[Message:   BepInEx] Chainloader started
+[Info   :   BepInEx] 61 plugins to load
+[Info   :   BepInEx] Loading [SeneaL API Early 1.2.0] (__seneaL.valheim.api.early)
+[Info   :   BepInEx] Loading [Conditional Config Sync 1.0.11] (_shudnal.ConditionalConfigSync)
+[Info   :   BepInEx] Loading [Jotunn 2.30.2] (com.jotunn.jotunn)
+[Info   :Jotunn.Main] Initializing ModCompatibility
+[Info   :   BepInEx] Loading [Wire's Forge of Goodtential 0.6.1] (wire.valheim.forgeofgoodtential)
+"""
+
+
+def test_real_bepinex_5_4_23_lines_with_guid(tmp_path):
+    log = tmp_path / "LogOutput.log"
+    w = LaunchWatcher(log, started_at=time.time() - 5)
+    log.write_text(BEPINEX_START + REAL_5_4_23)
+    st = w.poll()
+    assert st.total == 61 and st.loaded == 4
+    assert st.last_mod == "Wire's Forge of Goodtential 0.6.1"
+    with open(log, "a") as f:
+        f.write("[Message:   BepInEx] Chainloader startup complete (61 loaded, 0 skipped, 0 failed)\n")
+    st = w.poll()
+    assert st.phase == "ready" and st.final == 61
