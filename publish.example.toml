@@ -1,0 +1,57 @@
+# lynx-publish settings. Copy to ~/.config/lynx-mod-launcher/publish.toml (or ./publish.toml).
+
+# The Gale profile to publish: everything in it (minus excludes) is the modpack.
+# Switch playthroughs by changing this, or one-off with: lynx-publish --profile OtherProfile
+profile = "PridelandsPoV"
+# Gale's profile folder, if yours isn't the default:
+# gale_profiles = "~/.local/share/com.kesomannen.gale/valheim/profiles"
+# Or point at any folder instead of a Gale profile:
+# source = "/path/to/profile"
+
+# Shown to friends in the launcher window (defaults to the profile name).
+# name = "PridelandsPoV"
+
+# Where the files go:
+#   "github:OWNER/REPO"            GitHub Releases on a public repo (gh CLI, logged in). Nothing to host.
+#   "/srv/www/modpack"             a folder your web server serves
+#   "user@host:/srv/www/modpack"   the same over rsync/SSH
+dest = "github:OWNER/valheim-modpack"
+
+# Installed on a friend's first run, then never overwritten or deleted, so their own
+# tweaks (keybinds, UI layout) survive updates. Globs relative to the profile:
+#   *  within a folder, ** across folders, no slash = match the file name anywhere.
+keep = [
+  # "BepInEx/config/seneaL.valheim.ui.cfg",
+]
+
+# Left out of the modpack. Logs, *.old, *.bak, BepInEx/cache and Gale's metadata
+# are always skipped. These are per-character / per-world data and secrets found in
+# the PridelandsPoV profile. Friends' own copies are never deleted either way.
+exclude = [
+  "BepInEx/config/AutoServerPassword/",            # server password, never publish
+  "BepInEx/config/SeneaL-UI/stats/",               # per-character
+  "BepInEx/config/SeneaL-UI/unlocks/",             # per-character
+  "BepInEx/config/QuickStackStore_player_*",       # per-character
+  "BepInEx/config/Seasonality/LastSeasonChangeData/",  # per-world
+]
+
+# Files outside BepInEx/plugins|patchers|core whose names look like secrets (password,
+# token, key…) stop the publish unless excluded above or listed here.
+allow_secrets = [
+  "BepInEx/config/Allifreyr.AutoServerPassword.cfg",   # settings only; the password lives in passwords.json
+]
+
+# Extra rsync arguments for "user@host:" destinations, e.g. ["-e", "ssh -p 2222"].
+rsync_args = []
+
+# Optional: mirror parts of the profile onto the Pelican Valheim server, so it runs the
+# same plugin versions. Run with --server (or set enabled = true). Stop the server first,
+# or restart it afterwards.
+[server]
+enabled = false
+# Pelican keeps each server's files in /var/lib/pelican/volumes/<server-uuid> on the Wings host.
+dest = "root@10.0.0.99:/var/lib/pelican/volumes/SERVER-UUID"
+paths = ["BepInEx/plugins"]         # add "BepInEx/config" to sync configs as well
+exclude = []                        # client-only mods to keep off the server, e.g. ["BepInEx/plugins/seneaL-SeneaL_UI/"]
+delete = false                      # true = also remove server files that aren't in the profile
+rsync_args = []                     # e.g. ["--chown=pelican:pelican"]

@@ -1,0 +1,75 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # for attaching builds to a release on tags
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pytest
+      - run: python -m pytest -q
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: LynxModLauncher-windows
+            file: dist/LynxModLauncher.exe
+          # Build on the oldest available Ubuntu so the binary runs on older glibc too.
+          - os: ubuntu-22.04
+            artifact: LynxModLauncher-linux
+            file: dist/LynxModLauncher
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pyinstaller certifi
+      # Set the MANIFEST_URL repository variable (Settings → Secrets and variables → Actions → Variables).
+      - name: Bake in the manifest URL
+        run: python scripts/set_manifest_url.py "${{ vars.MANIFEST_URL }}"
+      - name: PyInstaller
+        run: >
+          pyinstaller --onefile --windowed --name LynxModLauncher
+          --collect-data certifi launcher_main.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.file }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+      - run: |
+          mkdir release
+          cp out/LynxModLauncher-windows/LynxModLauncher.exe release/
+          cp out/LynxModLauncher-linux/LynxModLauncher release/LynxModLauncher-linux
+          chmod +x release/LynxModLauncher-linux
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lynx-mod-launcher"
+dynamic = ["version"]
+description = "Keeps friends' Valheim mods in sync with a published folder"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyinstaller>=6", "certifi"]
+
+[project.scripts]
+lynx-launcher = "lynxlauncher.launcher_app:main"
+lynx-publish = "lynxlauncher.publisher:main"
+
+[tool.setuptools]
+packages = ["lynxlauncher"]
+
+[tool.setuptools.dynamic]
+version = { attr = "lynxlauncher.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
