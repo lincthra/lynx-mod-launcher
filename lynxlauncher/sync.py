@@ -12,6 +12,11 @@ What counts as an "extra" (deleted):
   - elsewhere, only files a previous sync installed that have since left the manifest.
     Files mods create themselves in BepInEx/config (per-character stats, caches) stay.
 Files matching the manifest's keep patterns are installed once and then never touched.
+
+Outside the mirror folders, a file that differs from the manifest is only replaced when the
+published copy itself changed since we last installed it (installed.json remembers the hash we
+put there). Many mods re-save their .cfg every time the game starts, and re-downloading those on
+every launch was pointless churn. Mirror folders (the mod binaries) are always kept exact.
 """
 
 from __future__ import annotations
@@ -121,6 +126,7 @@ class SyncPlan:
     download: list[FileEntry] = field(default_factory=list)
     delete: list[str] = field(default_factory=list)
     kept: list[str] = field(default_factory=list)
+    local_changes: list[str] = field(default_factory=list)  # left alone, counted in up_to_date
     up_to_date: int = 0
 
     @property
@@ -236,17 +242,23 @@ class Syncer:
         self.cache = HashCache(self.state / "hashcache.json")
         self.installed_path = self.state / "installed.json"
 
-    def _load_installed(self) -> set[str]:
+    def _load_installed(self) -> dict[str, str]:
+        """{key: sha256 we installed}. The old format was a plain list of paths (hash unknown: "")."""
         try:
             data = json.loads(self.installed_path.read_text("utf-8"))
-            return {self._key(p) for p in data if isinstance(p, str)}
         except (OSError, ValueError, TypeError):
-            return set()
+            return {}
+        if isinstance(data, dict):
+            return {self._key(p): h for p, h in data.items() if isinstance(p, str) and isinstance(h, str)}
+        if isinstance(data, list):
+            return {self._key(p): "" for p in data if isinstance(p, str)}
+        return {}
 
     def _save_installed(self, manifest: Manifest) -> None:
         self.state.mkdir(parents=True, exist_ok=True)
         tmp = self.installed_path.with_name(self.installed_path.name + TMP_SUFFIX)
-        tmp.write_text(json.dumps(sorted(e.path for e in manifest.files)), "utf-8")
+        tmp.write_text(json.dumps({e.path: e.sha256 for e in sorted(manifest.files, key=lambda e: e.path)},
+                                  indent=0), "utf-8")
         os.replace(tmp, self.installed_path)
 
     # -- steps -------------------------------------------------------------
@@ -277,6 +289,11 @@ class Syncer:
             if keep.matches(entry.path):
                 plan.kept.append(rel)  # personal file: installed once, then left alone
             elif self.cache.matches(rel, full, entry):
+                plan.up_to_date += 1
+            elif not mirror.matches(entry.path) and installed.get(key) == entry.sha256:
+                # Changed locally (usually a mod re-saving its config at startup), but the
+                # published copy is the same one we installed last time: leave it.
+                plan.local_changes.append(rel)
                 plan.up_to_date += 1
             else:
                 plan.download.append(entry)
@@ -440,6 +457,8 @@ class Syncer:
             log.info("  download %s", e.path)
         for rel in plan.delete:
             log.info("  delete   %s", rel)
+        for rel in plan.local_changes:
+            log.debug("  changed locally, published copy unchanged: %s", rel)
         result = SyncResult(manifest_version=manifest.version, manifest_name=manifest.name or None,
                             up_to_date=plan.up_to_date, kept=len(plan.kept))
         if not plan.is_noop:

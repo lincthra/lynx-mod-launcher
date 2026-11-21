@@ -206,3 +206,37 @@ def test_second_instance_waits_for_lock(do_publish, server, profile):
         r = syncer(profile).run(server, lock_timeout=1)
     assert not r.ok and "already updating" in r.error
     assert syncer(profile).run(server).ok  # free again
+
+
+def test_config_resaved_by_game_is_left_until_published_copy_changes(do_publish, server, gale_profile, profile):
+    write(gale_profile, "BepInEx/config/some.mod.cfg", "a = 1\n")
+    do_publish()
+    assert syncer(profile).run(server).ok
+
+    write(profile, "BepInEx/config/some.mod.cfg", "a = 1\n# re-saved by the mod at startup\n")
+    write(profile, "BepInEx/plugins/ModB.dll", b"damaged")  # mirror folder: always repaired
+    r = syncer(profile).run(server)
+    assert r.ok and r.updated == 1
+    got = files_of(profile)
+    assert got["BepInEx/config/some.mod.cfg"].endswith(b"startup\n")  # left alone
+    assert got["BepInEx/plugins/ModB.dll"] != b"damaged"
+
+    write(gale_profile, "BepInEx/config/some.mod.cfg", "a = 2\n")  # Michael changes it
+    do_publish()
+    r = syncer(profile).run(server)
+    assert r.ok and r.updated == 1
+    assert files_of(profile)["BepInEx/config/some.mod.cfg"] == b"a = 2\n"
+
+
+def test_old_installed_list_format_still_works(do_publish, server, gale_profile, profile):
+    write(gale_profile, "BepInEx/config/some.mod.cfg", "a = 1\n")
+    m = do_publish()
+    assert syncer(profile).run(server).ok
+    state = profile / STATE_DIRNAME / "installed.json"
+    state.write_text(json.dumps(sorted(e.path for e in m.files)))  # format from v0.2.x
+    write(profile, "BepInEx/config/some.mod.cfg", "re-saved\n")
+    r = syncer(profile).run(server)
+    assert r.ok and r.updated == 1  # hash unknown: replaced once...
+    assert isinstance(json.loads(state.read_text()), dict)
+    write(profile, "BepInEx/config/some.mod.cfg", "re-saved\n")
+    assert syncer(profile).run(server).updated == 0  # ...then left alone

@@ -52,6 +52,8 @@ one reached over rsync/SSH (`dest = "user@host:/srv/www/modpack"`).
     and you've since dropped from the pack. Files that mods create on the friend's PC are never
     touched (SeneaL-UI stats, QuickStackStore data, server passwords).
   - Files matching **keep** patterns are installed once, then left alone.
+  - Outside those three mirrored folders, a file that changed on the friend's PC (usually a mod
+    re-saving its .cfg at startup) is only replaced when you publish a new version of it.
 - **Can't reach the server, or the update fails:** Launch still works with what's there.
 - **Valheim folder:** it only gets `winhttp.dll` plus a `doorstop_config.ini` with doorstop
   **disabled**. Each launch enables doorstop and points it at the mod folder, so starting

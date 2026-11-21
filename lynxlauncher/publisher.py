@@ -31,6 +31,7 @@ DEFAULT_EXCLUDE = [
     "BepInEx/LogOutput.log*",
     "BepInEx/ErrorLog*",
     "BepInEx/cache/",
+    "BepInEx/LMF_StartupReport.txt",  # LynxModFixes writes it on every start
     "*.old",
     "*.bak",
     "/mods.yml",
