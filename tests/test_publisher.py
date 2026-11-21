@@ -145,8 +145,41 @@ def test_main_writes_log_file(gale_profile, web_root, tmp_path, monkeypatch, cap
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     cfg = tmp_path / "p.toml"
     cfg.write_text(f'source = "{gale_profile.as_posix()}"\ndest = "{web_root.as_posix()}"\n')
+    assert publisher.main(["-c", str(cfg)]) == 0
+    capsys.readouterr()
     assert publisher.main(["-c", str(cfg), "--dry-run"]) == 0
     out = capsys.readouterr().out
-    assert "Full log:" in out and "ModB.dll" not in out
-    logs = list((tmp_path / "state/lynx-mod-launcher/publish-logs").glob("*.log"))
-    assert len(logs) == 1 and "ModB.dll" in logs[0].read_text()
+    assert "Full log:" in out and "ModB.dll" not in out and "already published" in out
+    logs = sorted((tmp_path / "state/lynx-mod-launcher/publish-logs").glob("*.log"))
+    assert logs and "ModB.dll" in logs[-1].read_text()
+
+
+def test_dry_run_lists_pending_uploads(do_publish, gale_profile, web_root, publish_cfg):
+    lines = []
+    publish(publish_cfg, dry_run=True, out=lines.append)
+    assert any("would upload" in l for l in lines)
+    do_publish()
+    lines.clear()
+    publish(publish_cfg, dry_run=True, out=lines.append)
+    assert any("already published" in l for l in lines)
+    write(gale_profile, "BepInEx/plugins/ModB.dll", b"v2")
+    lines.clear()
+    publish(publish_cfg, dry_run=True, out=lines.append)
+    assert any("would upload 1 new file" in l for l in lines) and any(l.strip() == "BepInEx/plugins/ModB.dll" for l in lines)
+
+
+def test_confirm_and_server_only(gale_profile, web_root, tmp_path, monkeypatch, capsys):
+    from lynxlauncher import publisher
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    srv = tmp_path / "srv"
+    write(srv, "BepInEx/plugins/ModB.dll", b"old")
+    cfg = tmp_path / "p.toml"
+    cfg.write_text(f'source = "{gale_profile.as_posix()}"\ndest = "{web_root.as_posix()}"\n'
+                   f'[server]\ndest = "{srv.as_posix()}"\n')
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    assert publisher.main(["-c", str(cfg), "--confirm"]) == 0
+    assert not (web_root / "manifest.json").exists()  # declined
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    assert publisher.main(["-c", str(cfg), "--server-only", "--confirm"]) == 0
+    assert (srv / "BepInEx/plugins/ModB.dll").read_bytes() == b"mod b v1"
+    assert not (web_root / "manifest.json").exists()  # server-only never publishes

@@ -13,7 +13,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import APP_NAME, __version__
+from . import APP_NAME, __version__, selfupdate
 from .doorstop import PROTON_LAUNCH_OPTIONS, DoorstopError
 from .launcher_app import LauncherCore
 from .paths import fmt_size
@@ -23,8 +23,9 @@ log = logging.getLogger(__name__)
 
 
 class LauncherWindow:
-    def __init__(self, core: LauncherCore, log_path: Path):
+    def __init__(self, core: LauncherCore, log_path: Path, argv: list[str] | None = None):
         self.core = core
+        self.argv = argv or []
         self.log_path = log_path
         self.events: queue.Queue = queue.Queue()
         self.busy = False
@@ -70,6 +71,18 @@ class LauncherWindow:
         threading.Thread(target=self._worker, daemon=True).start()
 
     def _worker(self) -> None:
+        if not getattr(self, "_update_checked", False):
+            self._update_checked = True
+            info = self.core.check_self_update()
+            if info:
+                self.events.put(("updating", info.version))
+                try:
+                    exe = self.core.apply_self_update(info, lambda d, t: self.events.put(("selfprogress", (d, t))))
+                    self.events.put(("relaunch", exe))
+                    return
+                except Exception as e:  # noqa: BLE001
+                    log.exception("self-update failed")
+                    self.events.put(("update_failed", str(e)))
         try:
             result = self.core.sync(throttled(lambda p: self.events.put(("progress", p))))
         except Exception as e:  # noqa: BLE001
@@ -87,6 +100,22 @@ class LauncherWindow:
                 kind, value = self.events.get_nowait()
                 if kind == "progress":
                     latest = value
+                elif kind == "updating":
+                    self.status.set(f"Updating the launcher to v{value}…")
+                elif kind == "selfprogress":
+                    d, t = value
+                    self.bar.configure(value=1000 * d / t if t else 0)
+                elif kind == "update_failed":
+                    self.detail.set(f"Launcher update failed ({value}); continuing with this version.")
+                elif kind == "relaunch":
+                    self.status.set("Restarting the launcher…")
+                    try:
+                        selfupdate.relaunch(value, self.argv)
+                    except OSError as e:
+                        log.error("relaunch failed: %s", e)
+                        messagebox.showinfo(APP_NAME, "The launcher was updated. Please start it again.", parent=self.root)
+                    self.root.after(300, self.root.destroy)
+                    return
                 else:
                     done = value
         except queue.Empty:
@@ -203,5 +232,5 @@ def throttled(fn, interval: float = 0.1):
     return wrapper
 
 
-def run_gui(core: LauncherCore, log_path: Path) -> int:
-    return LauncherWindow(core, log_path).run()
+def run_gui(core: LauncherCore, log_path: Path, argv: list[str] | None = None) -> int:
+    return LauncherWindow(core, log_path, argv).run()

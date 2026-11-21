@@ -362,6 +362,27 @@ def _publish_github(repo: str, manifest: Manifest, sources: dict[str, Path], pru
     out(f"  Manifest URL for the launcher: {github_manifest_url(repo)}")
 
 
+def pending_uploads(cfg: PublishConfig, manifest: Manifest, out: Out) -> list | None:
+    """Files whose content isn't stored at the destination yet (None if we can't tell cheaply)."""
+    files = [e for e in manifest.files if e.size > 0]
+    repo = github_repo(cfg.dest)
+    if repo:
+        gh = GitHub(repo, out)
+        try:
+            tags = gh.releases()
+        except PublishError:
+            return None
+        have: set[str] = set()
+        for tag in GH_TAGS:
+            if tag in tags:
+                have |= gh.assets(tag)
+        return [e for e in files if e.sha256 not in have]
+    if is_remote(cfg.dest):
+        return None
+    root = Path(cfg.dest).expanduser()
+    return [e for e in files if not (root / manifest.object_relpath(e.sha256)).is_file()]
+
+
 def check_secrets(manifest: Manifest, allow: list[str]) -> list[str]:
     secret = PathMatcher(SECRET_PATTERNS)
     skip = PathMatcher(SECRET_SKIP)
@@ -508,7 +529,21 @@ def publish(
     if dry_run and not list_files:
         out("  (full file list is in the log; add --list to print it)")
     if dry_run:
-        out("Dry run: nothing published.")
+        pending = pending_uploads(cfg, manifest, out)
+        if pending is None:
+            out("Dry run: nothing published.")
+        elif not pending:
+            out("Dry run: everything is already published (friends would see 'Up to date').")
+        else:
+            seen: set[str] = set()
+            uniq = [e for e in pending if not (e.sha256 in seen or seen.add(e.sha256))]
+            out(f"Dry run: would upload {len(uniq)} new file(s), {fmt_size(sum(e.size for e in uniq))}:")
+            for e in pending[:40]:
+                out(f"    {e.path}")
+            if len(pending) > 40:
+                out(f"    … and {len(pending) - 40} more (see the log)")
+                for e in pending[40:]:
+                    detail(out, f"    {e.path}")
     else:
         out(f"Publishing → {cfg.dest}")
         if repo:
@@ -540,19 +575,49 @@ def main(argv: list[str] | None = None) -> int:
     grp = ap.add_mutually_exclusive_group()
     grp.add_argument("--server", dest="server", action="store_true", default=None, help="also push to the game server")
     grp.add_argument("--no-server", dest="server", action="store_false", help="skip the game server push")
+    grp.add_argument("--server-only", action="store_true", help="only push to the game server; don't publish for friends")
+    ap.add_argument("--confirm", action="store_true", help="do a dry run first, then ask before doing it for real")
     ap.add_argument("--prune", action="store_true", help="delete objects no longer referenced (run when nobody is mid-update)")
     args = ap.parse_args(argv)
     log = PublishLog()
     log.detail(f"lynx-publish {' '.join(argv if argv is not None else sys.argv[1:])}  ({datetime.now().isoformat(timespec='seconds')})")
+
+    def run(dry: bool) -> None:
+        if args.server_only:
+            if not cfg.server.dest:
+                raise PublishError("[server] dest is not set in your settings")
+            check_dest(cfg.server.dest)
+            push_to_server(cfg, dry, log)
+        else:
+            publish(cfg, dry_run=dry, list_files=args.list, push_server=args.server, prune=args.prune, out=log)
+
     try:
         cfg = load_config(args.config or default_config_path(), args.profile)
-        publish(cfg, dry_run=args.dry_run, list_files=args.list, push_server=args.server, prune=args.prune, out=log)
+        if args.confirm and not args.dry_run:
+            run(True)
+            log("")
+            try:
+                answer = input("Go ahead and do this for real? [y/N] ").strip().lower()
+            except EOFError:
+                answer = ""
+            log.detail(f"answer: {answer!r}")
+            if answer not in ("y", "yes"):
+                log("Cancelled; nothing changed.")
+                print(f"Full log: {log.path}")
+                log.close()
+                return 0
+            log("")
+        run(args.dry_run)
     except PublishError as e:
         log.detail(f"error: {e}")
         print(f"error: {e}\nNothing was published.", file=sys.stderr)
         print(f"Full log: {log.path}", file=sys.stderr)
         log.close()
         return 1
+    except KeyboardInterrupt:
+        log("Interrupted.")
+        log.close()
+        return 130
     print(f"Full log: {log.path}")
     log.close()
     return 0

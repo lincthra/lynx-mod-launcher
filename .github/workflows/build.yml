@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -46,8 +46,10 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install pyinstaller certifi
       # Set the MANIFEST_URL repository variable (Settings → Secrets and variables → Actions → Variables).
-      - name: Bake in the manifest URL
-        run: python scripts/set_manifest_url.py "${{ vars.MANIFEST_URL }}"
+      - name: Bake in the manifest URL, version and self-update URL
+        run: |
+          python scripts/set_manifest_url.py "${{ vars.MANIFEST_URL }}"
+          python scripts/set_build_info.py "${{ github.ref_name }}" "${{ github.repository }}"
       - name: PyInstaller
         run: >
           pyinstaller --onefile --windowed --name LynxModLauncher
@@ -70,6 +72,24 @@ jobs:
           cp out/LynxModLauncher-windows/LynxModLauncher.exe release/
           cp out/LynxModLauncher-linux/LynxModLauncher release/LynxModLauncher-linux
           chmod +x release/LynxModLauncher-linux
+      # latest.json tells installed launchers there's a newer version (see lynxlauncher/selfupdate.py)
+      - name: Write latest.json
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          tag, repo = os.environ["TAG"], os.environ["REPO"]
+          def asset(name):
+              data = open(f"release/{name}", "rb").read()
+              return {"url": f"https://github.com/{repo}/releases/download/{tag}/{name}",
+                      "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+          json.dump({"version": tag.lstrip("v"),
+                     "assets": {"windows": asset("LynxModLauncher.exe"), "linux": asset("LynxModLauncher-linux")}},
+                    open("release/latest.json", "w"), indent=1)
+          PY
       - uses: softprops/action-gh-release@v2
         with:
           files: release/*
+          make_latest: true

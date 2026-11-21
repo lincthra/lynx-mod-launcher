@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import APP_NAME, __version__, build_config
-from . import doorstop, steam
+from . import doorstop, selfupdate, steam
 from .http import HttpFetcher
 from .paths import user_data_dir
 from .sync import Fetcher, Progress, ProgressFn, Syncer, SyncResult
@@ -25,6 +25,7 @@ log = logging.getLogger("lynxlauncher")
 class Settings:
     game_dir: str = ""
     launch_mode: str = "auto"  # auto | steam | direct (direct = run valheim.exe without Steam -applaunch; Windows only)
+    auto_update: str = "yes"   # "no" = never replace the launcher exe with a newer release
 
     @classmethod
     def load(cls, path: Path) -> "Settings":
@@ -68,8 +69,10 @@ class LauncherCore:
         profile_dir: Path | None = None,
         game_dir: Path | None = None,
         fetcher: Fetcher | None = None,
+        update_url: str = "",
     ):
         self.manifest_url = manifest_url
+        self.update_url = update_url
         self.data_dir = Path(data_dir) if data_dir else user_data_dir()
         self.profile_dir = Path(profile_dir) if profile_dir else self.data_dir / "profile"
         self.settings = Settings.load(self.data_dir / "settings.json")
@@ -96,6 +99,27 @@ class LauncherCore:
         self.settings.game_dir = str(p)
         self.settings.save()
         return True
+
+    # -- self-update ---------------------------------------------------------
+
+    def self_update_enabled(self) -> bool:
+        return bool(self.update_url) and selfupdate.is_frozen() and self.settings.auto_update.lower() != "no"
+
+    def check_self_update(self) -> selfupdate.UpdateInfo | None:
+        """Newer launcher release, or None. Never raises: a failed check just means no update."""
+        if not self.self_update_enabled():
+            return None
+        try:
+            info = selfupdate.check(self.update_url, __version__, self.fetcher)
+        except Exception as e:  # noqa: BLE001 - offline, GitHub hiccup, bad JSON: carry on
+            log.warning("update check failed: %s", e)
+            return None
+        if info:
+            log.info("launcher update available: %s -> %s", __version__, info.version)
+        return info
+
+    def apply_self_update(self, info: selfupdate.UpdateInfo, progress=None) -> Path:
+        return selfupdate.apply(info, self.fetcher, selfupdate.current_exe(), progress)
 
     # -- sync --------------------------------------------------------------
 
@@ -154,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sync-only", action="store_true", help="update the mods without a window and exit")
     ap.add_argument("--headless", action="store_true", help="update and launch without a window")
     ap.add_argument("--print-launch", action="store_true", help="with --headless: print the launch command instead of running it")
+    ap.add_argument("--no-self-update", action="store_true", help="don't check for a newer launcher")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
@@ -161,12 +186,27 @@ def main(argv: list[str] | None = None) -> int:
     url = args.manifest_url or os.environ.get("LYNX_MANIFEST_URL") or build_config.MANIFEST_URL
     data_dir = args.data_dir or user_data_dir()
     log_path = setup_logging(data_dir, args.verbose)
-    core = LauncherCore(url, data_dir, args.profile_dir, args.game_dir)
+    update_url = "" if args.no_self_update else (os.environ.get("LYNX_UPDATE_URL") or build_config.UPDATE_URL)
+    core = LauncherCore(url, data_dir, args.profile_dir, args.game_dir, update_url=update_url)
+    if selfupdate.is_frozen():
+        selfupdate.cleanup_old()
 
     if not (args.sync_only or args.headless):
         from .gui import run_gui
 
-        return run_gui(core, log_path)
+        return run_gui(core, log_path, sys.argv[1:])
+
+    if args.headless:
+        info = core.check_self_update()
+        if info:
+            print(f"Updating launcher to {info.version}…")
+            try:
+                exe = core.apply_self_update(info)
+                selfupdate.relaunch(exe, sys.argv[1:])
+                return 0
+            except Exception as e:  # noqa: BLE001
+                log.error("self-update failed: %s", e)
+                print(f"Launcher update failed ({e}); continuing with this version.")
 
     result = core.sync(_cli_progress)
     print(f"\n{result.headline()}. {result.detail()}".strip())

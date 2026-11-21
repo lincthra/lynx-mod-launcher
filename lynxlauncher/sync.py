@@ -45,6 +45,57 @@ PROTECTED = [
 ]
 
 
+class ProfileLock:
+    """OS-level lock on <profile>/.lynx/lock so two launcher windows never sync at once.
+    Released automatically if the process dies."""
+
+    def __init__(self, state_dir: Path, timeout: float = 120.0):
+        self.path = state_dir / "lock"
+        self.timeout = timeout
+        self._f = None
+
+    def _try(self) -> bool:
+        assert self._f is not None
+        try:
+            if os.name == "nt":
+                import msvcrt
+                self._f.seek(0)
+                msvcrt.locking(self._f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self._f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+    def __enter__(self) -> "ProfileLock":
+        import time
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._f = open(self.path, "a+b")
+        deadline = time.monotonic() + self.timeout
+        while not self._try():
+            if time.monotonic() >= deadline:
+                self._f.close()
+                raise SyncError("Another Lynx Mod Launcher window is already updating. Close it and try again.")
+            time.sleep(0.5)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._f:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    self._f.seek(0)
+                    msvcrt.locking(self._f.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self._f.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            self._f.close()
+            self._f = None
+
+
 class Fetcher(Protocol):
     def get_bytes(self, url: str) -> bytes: ...
     def download(self, url: str, sink: Callable[[bytes], None]) -> None: ...
@@ -356,7 +407,14 @@ class Syncer:
 
     # -- all together ------------------------------------------------------
 
-    def run(self, manifest_url: str, progress: ProgressFn = _noop) -> SyncResult:
+    def run(self, manifest_url: str, progress: ProgressFn = _noop, lock_timeout: float = 120.0) -> SyncResult:
+        try:
+            with ProfileLock(self.state, lock_timeout):
+                return self._run(manifest_url, progress)
+        except SyncError as e:  # lock not acquired
+            return SyncResult(error=str(e))
+
+    def _run(self, manifest_url: str, progress: ProgressFn) -> SyncResult:
         progress(Progress("manifest", message="Checking for updates"))
         try:
             manifest = self.fetch_manifest(manifest_url)

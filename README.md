@@ -67,6 +67,18 @@ one reached over rsync/SSH (`dest = "user@host:/srv/www/modpack"`).
 Steam is found via the Windows registry, `~/.steam`, `~/.local/share/Steam`, Flatpak or
 Snap, then `libraryfolders.vdf`. If that fails, the launcher asks for the folder once.
 
+### Self-update
+
+Every tagged release also publishes `latest.json` (version and SHA-256 for each exe). On start,
+the launcher checks it. If there's a newer version, it downloads it, verifies the hash, swaps
+the exe and restarts. Friends never re-download by hand. A failed or offline check is logged
+and ignored.
+- **Windows:** the old exe is renamed to `LynxModLauncher.exe.old` and deleted on the next start.
+- **Opting out:** `"auto_update": "no"` in `settings.json`, or `--no-self-update`.
+- **Running from source:** self-update is skipped.
+
+Two launcher windows never update at once: the second waits for the first (profile lock).
+
 ### Command line (testing, Wine)
 
 ```
@@ -87,7 +99,19 @@ lynx-publish                           # publish the profile named in the settin
 lynx-publish --profile NextPlaythrough # publish a different Gale profile
 lynx-publish --server                  # also mirror BepInEx/plugins to the Pelican server
 lynx-publish --prune                   # also delete files no longer used
+lynx-publish --server-only             # only update the Pelican server
+lynx-publish --confirm                 # dry run first, then ask "Go ahead?"
 ```
+
+A dry run lists exactly which files would be uploaded, or says everything is already published.
+
+### Desktop shortcuts (Linux)
+
+`scripts/install-shortcuts.sh` adds **Publish Modpack** (`--no-server --confirm`) and
+**Update Valheim Server** (`--server-only --confirm`) to the app menu and the desktop.
+Each opens a terminal, shows the dry run, asks before doing anything, and waits for Enter at
+the end. Shortcuts start in your home folder, so the script links the project's `publish.toml` into
+`~/.config/lynx-mod-launcher/`.
 
 - The settings take a Gale **profile name**, looked up in
   `~/.local/share/com.kesomannen.gale/valheim/profiles/`. You can use `source = "/any/folder"` instead.

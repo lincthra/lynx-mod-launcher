@@ -197,3 +197,12 @@ def test_gui_throttle_keeps_phase_changes_and_final():
     f(Progress("apply", 0, 5))
     assert [p.phase for p in got] == ["manifest", "download", "download", "apply"]
     assert got[2].done == 1000
+
+
+def test_second_instance_waits_for_lock(do_publish, server, profile):
+    from lynxlauncher.sync import ProfileLock, STATE_DIRNAME
+    do_publish()
+    with ProfileLock(profile / STATE_DIRNAME):
+        r = syncer(profile).run(server, lock_timeout=1)
+    assert not r.ok and "already updating" in r.error
+    assert syncer(profile).run(server).ok  # free again
