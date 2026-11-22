@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Install two desktop/menu shortcuts for the publisher (Linux: KDE, GNOME, etc.):
+# Install three desktop/menu shortcuts for the publisher (Linux: KDE, GNOME, etc.):
 #   "Publish Modpack"       -> lynx-publish --no-server --confirm   (friends' download only)
 #   "Update Valheim Server" -> lynx-publish --server-only --confirm (Pelican server only)
+#   "Restart Server When Empty" -> lynx-publish --restart-when-empty (needs [server.restart])
 # Each opens a terminal, shows a dry run, asks "Go ahead?", runs, and waits for Enter.
 # Re-running this script is safe; it only (re)writes its own files.
 set -euo pipefail
@@ -70,6 +71,9 @@ make_shortcut lynx-publish-modpack "Publish Modpack" \
   "Publish the Gale profile so friends' launchers update" "document-send" "--no-server --confirm"
 make_shortcut lynx-update-server "Update Valheim Server" \
   "Copy updated server plugins to the Pelican server" "network-server" "--server-only --confirm"
+
+make_shortcut lynx-restart-when-empty "Restart Server When Empty" \
+  "Restart the Valheim server once nobody is on it" "view-refresh" "--restart-when-empty"
 
 command -v update-desktop-database >/dev/null && update-desktop-database "$apps_dir" 2>/dev/null || true
 echo "Done. (KDE may ask you to trust the desktop icons the first time you click them.)"

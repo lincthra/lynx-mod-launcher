@@ -17,6 +17,7 @@ lynxlauncher/manifest.py
 lynxlauncher/modupdates.py
 lynxlauncher/paths.py
 lynxlauncher/publisher.py
+lynxlauncher/restarter.py
 lynxlauncher/selfupdate.py
 lynxlauncher/steam.py
 lynxlauncher/sync.py
@@ -30,5 +31,6 @@ tests/test_launchwatch.py
 tests/test_modupdates.py
 tests/test_paths_steam.py
 tests/test_publisher.py
+tests/test_restarter.py
 tests/test_selfupdate.py
 tests/test_sync.py

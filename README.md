@@ -126,6 +126,17 @@ the same list, and a normal publish mentions any updates at the end. Nothing is 
 in Gale, then publish. Versions come from Gale's `data.sqlite3` (each mod's own site; zip imports
 are checked on both), falling back to `BepInEx/plugins/*/manifest.json`.
 
+### Restarting the server once nobody's on
+
+With a `[server.restart]` section (see publish.example.toml) and a Pelican client API key in
+`~/.config/lynx-mod-launcher/pelican.key`, a server update that changed something ends with
+"Restart the server once nobody's on? [y/N]". Yes starts a background job: every 5 minutes it
+asks the server for its player count (Steam query on port 2457), and after 2 empty checks in a
+row it sends Pelican a restart (same as the panel's button, so the world saves). It leaves an
+offline server alone and gives up after 24 hours. `lynx-publish --restart-when-empty` starts one
+any time; `--restart-status` and `--restart-cancel` check on it or call it off. The job runs on
+this PC, so it stops if the PC shuts down.
+
 ### Desktop shortcuts (Linux)
 
 `scripts/install-shortcuts.sh` adds **Publish Modpack** (`--no-server --confirm`) and

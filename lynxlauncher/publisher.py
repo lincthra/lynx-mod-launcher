@@ -103,6 +103,7 @@ class ServerConfig:
     # mods stay off the server without having to list them. Add a new server mod once by
     # hand (or with existing_only = false for one run) and it's kept in sync after that.
     existing_only: bool = True
+    restart: "RestartConfig | None" = None  # [server.restart]: restart once nobody's on
 
 
 @dataclass
@@ -133,6 +134,33 @@ def gale_profile_path(name: str, gale_profiles: str | None = None) -> Path:
     return base.expanduser() / name
 
 
+def _restart_config(d, server_dest: str):
+    from .restarter import RestartConfig
+
+    if d is None:
+        return None
+    if not isinstance(d, dict):
+        raise PublishError("[server.restart] must be a table")
+    for key in ("panel", "server_id"):
+        if not isinstance(d.get(key), str) or not d[key]:
+            raise PublishError(f"[server.restart] '{key}' is required")
+    query = str(d.get("query", ""))
+    if not query:  # default: the host from [server] dest, port 2457
+        host = server_dest.split(":", 1)[0].rsplit("@", 1)[-1] if is_remote(server_dest) else ""
+        if not host:
+            raise PublishError("[server.restart] set 'query' (e.g. \"10.0.0.99:2457\")")
+        query = f"{host}:2457"
+    host, _, port = query.rpartition(":")
+    if not host or not port.isdigit():
+        raise PublishError(f"[server.restart] query must look like host:port, not {query!r}")
+    return RestartConfig(
+        panel=d["panel"], server_id=d["server_id"], query_host=host, query_port=int(port),
+        api_key_file=str(d.get("api_key_file", "")),
+        poll_minutes=float(d.get("poll_minutes", 5)), empty_checks=int(d.get("empty_checks", 2)),
+        give_up_hours=float(d.get("give_up_hours", 24)),
+    )
+
+
 def load_config(path: Path, profile: str | None = None) -> PublishConfig:
     """profile (e.g. from --profile) overrides the file's profile/source."""
     try:
@@ -161,6 +189,7 @@ def load_config(path: Path, profile: str | None = None) -> PublishConfig:
         delete=bool(srv.get("delete", False)),
         existing_only=bool(srv.get("existing_only", True)),
         rsync_args=_str_list(srv, "rsync_args"),
+        restart=_restart_config(srv.get("restart"), str(srv.get("dest", ""))),
     )
     return PublishConfig(
         source=source,
@@ -426,8 +455,10 @@ def server_entries(dest: str, sub: str, rsync_args: list[str]) -> set[str]:
     return {p.name for p in root.iterdir()} if root.is_dir() else set()
 
 
-def push_to_server(cfg: PublishConfig, dry_run: bool, out: Out) -> None:
+def push_to_server(cfg: PublishConfig, dry_run: bool, out: Out) -> int:
+    """Returns how many files were (or would be) changed on the server."""
     srv = cfg.server
+    total = 0
     if not srv.dest:
         raise PublishError("[server] dest is not set")
     exclude = PathMatcher(DEFAULT_EXCLUDE + cfg.exclude + srv.exclude)
@@ -465,6 +496,7 @@ def push_to_server(cfg: PublishConfig, dry_run: bool, out: Out) -> None:
                 # "/./" tells --relative where the path to recreate on the server starts
                 cmd += [f"{stage}/./{sub}/", srv.dest.rstrip("/") + "/"]
                 n = _run(cmd, out)
+                total += n
                 out(f"  {sub}: {n} change(s)" + (" would be made" if dry_run else ""))
             continue
         dst_root = Path(srv.dest).expanduser().joinpath(*sub.split("/"))
@@ -486,7 +518,10 @@ def push_to_server(cfg: PublishConfig, dry_run: bool, out: Out) -> None:
                         full.unlink()
                     removed += 1
         out(f"  {sub}: {copied} copied, {removed} deleted")
-    out("  Restart the Valheim server so it picks up the new plugins.")
+        total += copied + removed
+    if total and not dry_run:
+        out("  Restart the Valheim server so it picks up the new plugins.")
+    return total
 
 
 def publish(
@@ -604,21 +639,78 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--confirm", action="store_true", help="do a dry run first, then ask before doing it for real")
     ap.add_argument("--prune", action="store_true", help="delete objects no longer referenced (run when nobody is mid-update)")
     ap.add_argument("--check-updates", action="store_true", help="only list mods with newer versions on Thunderstore/Hexium")
+    rg = ap.add_mutually_exclusive_group()
+    rg.add_argument("--restart-when-empty", action="store_true",
+                    help="restart the server once nobody is on (in the background; needs [server.restart])")
+    rg.add_argument("--no-restart", action="store_true", help="don't offer to restart the server afterwards")
+    rg.add_argument("--restart-status", action="store_true", help="show whether a restart is waiting")
+    rg.add_argument("--restart-cancel", action="store_true", help="cancel a waiting restart")
+    rg.add_argument("--restart-wait", action="store_true", help=argparse.SUPPRESS)  # the background job itself
     args = ap.parse_args(argv)
     log = PublishLog()
     log.detail(f"lynx-publish {' '.join(argv if argv is not None else sys.argv[1:])}  ({datetime.now().isoformat(timespec='seconds')})")
 
-    def run(dry: bool) -> None:
-        if args.server_only:
-            if not cfg.server.dest:
-                raise PublishError("[server] dest is not set in your settings")
-            check_dest(cfg.server.dest)
-            push_to_server(cfg, dry, log)
-        else:
-            publish(cfg, dry_run=dry, list_files=args.list, push_server=args.server, prune=args.prune, out=log)
+    from . import restarter
+
+    if args.restart_status:
+        print(restarter.status_text())
+        return 0
+    if args.restart_cancel:
+        print("Cancelled the waiting restart." if restarter.cancel() else "No restart is waiting.")
+        return 0
+
+    def run(dry: bool) -> int:
+        """Returns the number of server changes."""
+        do_server = args.server_only or (args.server if args.server is not None else cfg.server.enabled)
+        if not args.server_only:
+            publish(cfg, dry_run=dry, list_files=args.list, push_server=False, prune=args.prune, out=log)
+        if not do_server:
+            return 0
+        if not cfg.server.dest:
+            raise PublishError("[server] dest is not set in your settings")
+        check_dest(cfg.server.dest)
+        return push_to_server(cfg, dry, log)
+
+    def offer_restart(changes: int) -> None:
+        rc = cfg.server.restart
+        if rc is None or args.no_restart or args.dry_run:
+            return
+        if not args.restart_when_empty:
+            if not changes or not sys.stdin.isatty():
+                return
+            try:
+                answer = input("\nRestart the server once nobody's on? [y/N] ").strip().lower()
+            except EOFError:
+                answer = ""
+            log.detail(f"restart answer: {answer!r}")
+            if answer not in ("y", "yes"):
+                log("Not restarting; do it from the panel when it suits you.")
+                return
+        try:
+            log(f"Server now: {restarter.preflight(rc)}")
+            pid = restarter.start_background(config_path, args.profile)
+        except restarter.RestartError as e:
+            log(f"Couldn't set up the restart: {e}")
+            return
+        log(f"Waiting in the background (pid {pid}); checks every {rc.poll_minutes:g} min, "
+            f"gives up after {rc.give_up_hours:g} h.")
+        log("  lynx-publish --restart-status   see how it's going")
+        log("  lynx-publish --restart-cancel   call it off")
 
     try:
-        cfg = load_config(args.config or default_config_path(), args.profile)
+        config_path = (args.config or default_config_path()).resolve()
+        cfg = load_config(config_path, args.profile)
+        if args.restart_wait:
+            log.close()
+            log.path.unlink(missing_ok=True)  # the job writes its own log
+            return _restart_wait(cfg)
+        if args.restart_when_empty and not (args.server_only or args.server):
+            if cfg.server.restart is None:
+                raise PublishError("--restart-when-empty needs a [server.restart] section in your settings")
+            offer_restart(0)
+            print(f"Full log: {log.path}")
+            log.close()
+            return 0
         if args.check_updates:
             report_mod_updates(cfg, log)
             print(f"Full log: {log.path}")
@@ -638,7 +730,8 @@ def main(argv: list[str] | None = None) -> int:
                 log.close()
                 return 0
             log("")
-        run(args.dry_run)
+        changes = run(args.dry_run)
+        offer_restart(changes)
         if not args.server_only:
             report_mod_updates(cfg, log, quiet=True)  # a heads-up only; silent when nothing's new
     except PublishError as e:
@@ -654,6 +747,37 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Full log: {log.path}")
     log.close()
     return 0
+
+
+def _restart_wait(cfg: PublishConfig) -> int:
+    """The background job started by --restart-when-empty or the prompt."""
+    import signal
+
+    from . import restarter
+
+    def out(msg: str) -> None:
+        print(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {msg}", flush=True)
+
+    def on_term(_sig, _frame):
+        out("Cancelled; not restarting.")
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, on_term)
+    try:
+        if cfg.server.restart is None:
+            out("error: no [server.restart] settings")
+            return 1
+        restarter.wait_and_restart(cfg.server.restart, out)
+        return 0
+    except restarter.RestartError as e:
+        out(f"error: {e}")
+        return 1
+    finally:
+        try:
+            if json.loads(restarter.job_path().read_text("utf-8")).get("pid") == os.getpid():
+                restarter.job_path().unlink()
+        except (OSError, ValueError, AttributeError):
+            pass
 
 
 if __name__ == "__main__":

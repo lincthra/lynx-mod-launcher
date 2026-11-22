@@ -56,3 +56,16 @@ exclude = []                        # client-only mods to keep off the server, e
 existing_only = true                # only update mod folders the server already has; client-only mods never get added
 delete = false                      # true = also remove files inside those folders that the profile no longer has
 rsync_args = []                     # e.g. ["--chown=pelican:pelican"]
+
+# Optional: after a server update, lynx-publish asks "Restart the server once nobody's on?".
+# If you say yes, a background job checks the player count every few minutes and asks Pelican
+# to restart the server after it has been empty on `empty_checks` checks in a row. Never automatic.
+# Put a Pelican client API key (Account > API Credentials) in ~/.config/lynx-mod-launcher/pelican.key
+# (not in this file: keep keys out of git).
+#[server.restart]
+#panel = "https://pelican.example.com"
+#server_id = "ca12ff25"                # from the panel URL: /server/<server_id>
+#query = "10.0.0.99:2457"              # default: the host from [server] dest, port 2457 (game port + 1)
+#poll_minutes = 5
+#empty_checks = 2
+#give_up_hours = 24
