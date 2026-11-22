@@ -9,6 +9,7 @@ import logging.handlers
 import os
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -162,6 +163,30 @@ class LauncherCore:
                 )
         return spec
 
+    def ensure_steam(self, spec: doorstop.LaunchSpec, status=lambda msg: None, timeout: float = 180,
+                     sleep=time.sleep, clock=time.time) -> None:
+        """Native Linux Valheim crashes without a logged-in Steam client: start it and wait."""
+        if not spec.start_steam or not sys.platform.startswith("linux"):
+            return
+        if steam.steam_ready():
+            return
+        started = clock()
+        newer_than = 0.0
+        if steam.steam_process_running():
+            status("Waiting for Steam to sign in…")
+        else:
+            status("Starting Steam…")
+            steam.start_steam(spec.start_steam)
+            newer_than = started - 1  # ignore a login left over from a Steam that crashed
+        while not steam.steam_ready(newer_than=newer_than):
+            if clock() - started > timeout:
+                raise doorstop.DoorstopError(
+                    "Steam didn't finish starting. If it's asking you to sign in, do that, then press Launch again.")
+            sleep(1)
+        log.info("Steam is ready after %.0fs", clock() - started)
+        status("Steam is ready, starting Valheim…")
+        sleep(5)  # Steam takes a moment after login before games can talk to it
+
     def launch(self, spec: doorstop.LaunchSpec) -> subprocess.Popen:
         return doorstop.start(spec)
 
@@ -232,6 +257,11 @@ def main(argv: list[str] | None = None) -> int:
         for k in sorted(k for k, v in spec.env.items() if os.environ.get(k) != v):
             print(f"  {k}={spec.env[k]}")
         return 0
+    try:
+        core.ensure_steam(spec, lambda m: print(m))
+    except doorstop.DoorstopError as e:
+        print(f"Can't launch: {e}")
+        return 1
     core.launch(spec)
     return 0
 

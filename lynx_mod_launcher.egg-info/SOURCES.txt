@@ -33,4 +33,5 @@ tests/test_paths_steam.py
 tests/test_publisher.py
 tests/test_restarter.py
 tests/test_selfupdate.py
+tests/test_steam_start.py
 tests/test_sync.py

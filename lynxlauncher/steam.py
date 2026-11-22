@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -251,3 +252,106 @@ def steam_command(steam_root: Path | None, platform: str | None = None) -> list[
     if shutil.which("flatpak"):
         return ["flatpak", "run", "com.valvesoftware.Steam"]
     return None
+
+
+# -- making sure the Steam client is up (Linux native) ---------------------------
+#
+# The native Linux build of Valheim needs a running, logged-in Steam client: without one,
+# Steamworks fails to initialise and the game crashes at startup. Proton and Windows launches go
+# through `steam -applaunch`, which starts Steam by itself, so only the native path needs this.
+#
+# "Running": a process called steam (or steamwebhelper) exists.
+# "Logged in": the newest connection state in <steam>/logs/connection_log.txt is "Logged On":
+#   [2026-11-22 12:19:36] [Logged On, 4, 7] [U:1:…] RecvMsgClientLogOnResponse() : processing complete
+#   [2026-11-22 12:18:08] [Logged Off, 0, 0] [U:1:…] ConnectionDisconnected() …
+#   Older Steam builds also kept ActiveUser in registry.vdf; that's checked too. After a Steam
+#   crash the log can still end on "Logged On", so when we start Steam ourselves we only trust a
+#   log written after that moment.
+
+STEAM_PROCESS_NAMES = {"steam", "steamwebhelper"}
+
+
+def registry_vdf_paths(home: Path | None = None) -> list[Path]:
+    home = home or Path.home()
+    return [home / ".steam" / "registry.vdf",
+            home / ".var" / "app" / "com.valvesoftware.Steam" / ".steam" / "registry.vdf"]
+
+
+def steam_process_running(proc: Path = Path("/proc")) -> bool:
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return False
+    for d in entries:
+        if not d.name.isdigit():
+            continue
+        try:
+            if d.joinpath("comm").read_text("utf-8", "replace").strip() in STEAM_PROCESS_NAMES:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+_CONN_STATE = re.compile(r"^\[[^\]]*\] \[(?P<state>[A-Za-z ]+),")
+
+
+def connection_logs(home: Path | None = None) -> list[Path]:
+    return [root / "logs" / "connection_log.txt" for root in steam_root_candidates("linux", home)]
+
+
+def last_connection_state(path: Path) -> str | None:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 65536))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        m = _CONN_STATE.match(line)
+        if m:
+            return m.group("state").strip()
+    return None
+
+
+def steam_logged_in(home: Path | None = None, newer_than: float = 0.0) -> bool:
+    for path in connection_logs(home):
+        try:
+            if path.stat().st_mtime < newer_than:
+                continue
+        except OSError:
+            continue
+        if last_connection_state(path) == "Logged On":
+            return True
+    for path in registry_vdf_paths(home):  # older Steam builds
+        try:
+            if path.stat().st_mtime < newer_than:
+                continue
+        except OSError:
+            continue
+        data = _read_vdf(path)
+        user = ci_get(data, "Registry", "HKCU", "Software", "Valve", "Steam", "ActiveUser")
+        if user is not None and str(user).strip() not in ("", "0"):
+            return True
+    return False
+
+
+def steam_ready(home: Path | None = None, proc: Path = Path("/proc"), newer_than: float = 0.0) -> bool:
+    return steam_process_running(proc) and steam_logged_in(home, newer_than)
+
+
+def start_steam(cmd: list[str]) -> None:
+    import subprocess
+
+    log.info("starting Steam: %s", " ".join(cmd + ["-silent"]))
+    env = dict(os.environ)
+    env.pop("LD_PRELOAD", None)
+    if getattr(sys, "frozen", False):  # don't hand PyInstaller's bundled libraries to Steam
+        orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if orig:
+            env["LD_LIBRARY_PATH"] = orig
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+    subprocess.Popen(cmd + ["-silent"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True, env=env)

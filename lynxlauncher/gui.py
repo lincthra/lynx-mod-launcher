@@ -125,7 +125,14 @@ class Splash:
         if self.frames:
             self.frame_i = (self.frame_i + 1) % len(self.frames)
             self.logo.configure(image=self.frames[self.frame_i])
-        self.top.after(FRAME_MS, self._animate)
+        self._anim_id = self.top.after(FRAME_MS, self._animate)
+
+    def destroy(self) -> None:
+        try:
+            self.top.after_cancel(self._anim_id)
+        except (AttributeError, tk.TclError):
+            pass
+        self.top.destroy()
 
     def _drag_start(self, e) -> None:
         self._dx, self._dy = e.x_root - self.top.winfo_x(), e.y_root - self.top.winfo_y()
@@ -360,12 +367,22 @@ class LauncherWindow:
                 self.root.clipboard_append(PROTON_LAUNCH_OPTIONS)
             if not messagebox.askokcancel(APP_NAME, warning + "\n\nLaunch now?", parent=self.root):
                 return
-        try:
-            self.core.launch(spec)
-        except OSError as e:
-            log.exception("launch failed")
-            messagebox.showerror(APP_NAME, f"Couldn't start Valheim: {e}", parent=self.root)
-            return
+        # Starting Steam first (Linux native) can take a while, so it runs off the UI thread and
+        # the splash shows what's happening. poll_splash picks up the result.
+        self.launch_result: dict = {"phase": "pending", "status": "", "error": ""}
+        res = self.launch_result
+
+        def work() -> None:
+            try:
+                self.core.ensure_steam(spec, lambda m: res.__setitem__("status", m))
+                self.core.launch(spec)
+                res["phase"] = "launched"
+            except (DoorstopError, OSError) as e:
+                log.exception("launch failed")
+                res["error"] = str(e)
+                res["phase"] = "failed"
+
+        threading.Thread(target=work, daemon=True).start()
         self.show_splash()
 
     # -- splash while Valheim starts ------------------------------------------
@@ -384,6 +401,22 @@ class LauncherWindow:
 
     def poll_splash(self) -> None:
         sp = self.splash
+        res = getattr(self, "launch_result", {"phase": "launched"})
+        if res["phase"] == "pending":
+            sp.status.set(res["status"] or "Starting Valheim…")
+            sp.detail.set("")
+            self.root.after(300, self.poll_splash)
+            return
+        if res["phase"] == "failed":
+            self.splash.destroy()
+            self.splash = None
+            self.root.deiconify()
+            messagebox.showerror(APP_NAME, f"Couldn't start Valheim: {res['error']}", parent=self.root)
+            return
+        if res.get("started_at") is None:  # just launched: time the game from now, not from Steam
+            res["started_at"] = time.monotonic()
+            self.sp_started = res["started_at"]
+            self.sp_last_change = (self.sp_started, -1)
         st = self.watcher.poll()
         now = time.monotonic()
         elapsed = now - self.sp_started

@@ -67,6 +67,7 @@ class LaunchSpec:
     env: dict[str, str] = field(default_factory=dict)  # full environment for the child
     kind: GameKind = GameKind.WINDOWS
     warnings: list[str] = field(default_factory=list)
+    start_steam: list[str] | None = None  # Linux native: start this Steam client first if it isn't up
 
 
 def _ini_value(text: str, *keys: str) -> str | None:
@@ -243,7 +244,7 @@ def build_launch(
         env["LD_LIBRARY_PATH"] = ":".join(libpath)
         preload = [str(info.linux_lib)] + ([env["LD_PRELOAD"]] if env.get("LD_PRELOAD") else [])
         env["LD_PRELOAD"] = ":".join(preload)
-        return LaunchSpec([str(game_dir / "valheim.x86_64")], str(game_dir), env, kind)
+        return LaunchSpec([str(game_dir / "valheim.x86_64")], str(game_dir), env, kind, start_steam=steam_cmd)
 
     if kind is GameKind.LINUX_PROTON:
         if not steam_cmd:
