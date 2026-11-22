@@ -5,4 +5,3 @@ dist/
 *.spec
 .pytest_cache/
 publish.toml
-*.egg-info/

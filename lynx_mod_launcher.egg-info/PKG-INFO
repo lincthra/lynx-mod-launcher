@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: lynx-mod-launcher
+Version: 0.2.0
+Summary: Keeps friends' Valheim mods in sync with a published folder
+Requires-Python: >=3.11
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: pyinstaller>=6; extra == "dev"
+Requires-Dist: certifi; extra == "dev"

@@ -1,4 +1,5 @@
 import socket
+import sys
 import threading
 
 import pytest
@@ -120,6 +121,7 @@ def test_api_key_from_file_or_env(tmp_path, monkeypatch):
     assert cfg.api_key() == "ptlc_env"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the background job is for the publisher's Linux PC")
 def test_background_job_status_and_cancel(tmp_path, monkeypatch):
     import time as _time
 
