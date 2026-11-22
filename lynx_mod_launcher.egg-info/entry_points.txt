@@ -1,3 +1,0 @@
-[console_scripts]
-lynx-launcher = lynxlauncher.launcher_app:main
-lynx-publish = lynxlauncher.publisher:main
